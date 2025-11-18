@@ -1,0 +1,33 @@
+# Environment
+.env
+*.pyc
+__pycache__/
+.venv/
+.venv_new/
+venv/
+
+# OAuth tokens - NEVER commit these!
+token.json
+credentials.json
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.db
+*.log
+
+# Temporary files
+/tmp/
