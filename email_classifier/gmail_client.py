@@ -118,25 +118,26 @@ class GmailClient:
         return body or ""
 
     def create_draft(
-        self, thread_id: str, to: str, subject: str, body: str
+        self, thread_id: str, to: str, subject: str, body: str, is_html: bool = True
     ) -> dict[str, Any]:
         """
-        Create a draft reply in Gmail.
+        Create a draft reply in Gmail with HTML support.
 
         Args:
             thread_id: Thread ID to reply to
             to: Recipient email address
             subject: Email subject (with Re: prefix)
-            body: Draft email body
+            body: Draft email body (HTML or plain text)
+            is_html: If True, body is treated as HTML (default: True)
 
         Returns:
-            Created draft information
+            Created draft information with 'id' and 'message' fields
         """
         import base64
         from email.mime.text import MIMEText
 
-        # Create message
-        message = MIMEText(body)
+        # Create message with appropriate content type
+        message = MIMEText(body, 'html' if is_html else 'plain', 'utf-8')
         message["to"] = to
         message["subject"] = subject
 
@@ -155,6 +156,30 @@ class GmailClient:
         )
 
         return draft
+
+    def send_draft(self, draft_id: str) -> dict[str, Any]:
+        """
+        Send an existing Gmail draft by ID.
+
+        This preserves all user edits made in the Gmail app.
+
+        Args:
+            draft_id: Draft ID from create_draft() return value
+
+        Returns:
+            Sent message information
+
+        Raises:
+            HttpError: If draft not found (404) or send fails
+        """
+        sent = (
+            self.service.users()
+            .drafts()
+            .send(userId="me", body={"id": draft_id})
+            .execute()
+        )
+
+        return sent
 
     def send_email(
         self, to: str, subject: str, body: str, cc: str | None = None, thread_id: str | None = None
@@ -199,9 +224,56 @@ class GmailClient:
 
         return sent
 
+    def batch_send_drafts(self, draft_ids: list[str]) -> list[dict[str, Any]]:
+        """
+        Send multiple Gmail drafts by ID.
+
+        Preserves all user edits made in Gmail app.
+
+        Args:
+            draft_ids: List of draft IDs to send
+
+        Returns:
+            List of results with success/failure status
+
+        Example:
+            results = gmail.batch_send_drafts(['r123...', 'r456...'])
+            for result in results:
+                if result['success']:
+                    print(f"Sent: {result['message_id']}")
+                else:
+                    print(f"Failed: {result['error']}")
+        """
+        results = []
+
+        for draft_id in draft_ids:
+            try:
+                sent = self.send_draft(draft_id)
+
+                results.append({
+                    "draft_id": draft_id,
+                    "success": True,
+                    "message_id": sent.get("id"),
+                    "thread_id": sent.get("threadId"),
+                    "error": None,
+                })
+            except Exception as e:
+                results.append({
+                    "draft_id": draft_id,
+                    "success": False,
+                    "message_id": None,
+                    "thread_id": None,
+                    "error": str(e),
+                })
+
+        return results
+
     def batch_send_emails(self, emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
-        Send multiple emails in batch.
+        DEPRECATED: Use batch_send_drafts() instead.
+
+        This function recreates emails from text and loses Gmail edits.
+        Only kept for backward compatibility.
 
         Args:
             emails: List of email dicts with 'to', 'subject', 'body', 'cc', 'thread_id'
@@ -209,6 +281,12 @@ class GmailClient:
         Returns:
             List of results with success/failure status
         """
+        import warnings
+        warnings.warn(
+            "batch_send_emails() is deprecated. Use batch_send_drafts() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         results = []
 
         for email in emails:

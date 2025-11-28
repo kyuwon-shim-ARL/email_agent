@@ -131,37 +131,7 @@ def main() -> None:
         for email, classification in zip(emails, classifications):
             email['classification'] = classification
 
-        # === STEP 4: Update Spreadsheet ===
-        print("\n" + "="*80)
-        print("STEP 4: UPDATE GOOGLE SHEETS")
-        print("="*80)
-
-        print("\n📊 Adding emails to spreadsheet...")
-
-        for email in emails:
-            classification = email.get('classification', {})
-            status = "needs_response" if classification.get('requires_response') else "no_response"
-
-            email_data = {
-                "status": status,
-                "priority": classification.get('priority', 3),
-                "subject": email.get('subject', ''),
-                "sender": email.get('sender', ''),
-                "to": "me",  # 받은 메일이므로
-                "cc": "",
-                "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-                "body": email.get('body', email.get('snippet', '')),
-                "draft_body": "",  # 아직 생성 안 됨
-                "draft_to": "",
-                "draft_cc": "",
-                "thread_id": email.get('thread_id', ''),
-            }
-
-            sheets.add_email_row(spreadsheet_id, email_data)
-
-        print(f"✅ Added {len(emails)} emails to spreadsheet")
-
-        # === STEP 5: Generate Drafts ===
+        # === STEP 4: Generate Drafts ===
         emails_needing_response = [e for e in emails if e.get('classification', {}).get('requires_response')]
 
         if not emails_needing_response:
@@ -170,7 +140,7 @@ def main() -> None:
             return
 
         print("\n" + "="*80)
-        print(f"STEP 5: GENERATE DRAFTS ({len(emails_needing_response)} emails)")
+        print(f"STEP 4: GENERATE DRAFTS ({len(emails_needing_response)} emails)")
         print("="*80)
 
         # Learn sender-specific styles
@@ -208,71 +178,113 @@ def main() -> None:
         else:
             drafts = classifier.parse_draft_batch(response)
 
-            # Create drafts & update spreadsheet
+            # Create Gmail drafts (with HTML support)
+            draft_objects = []
             for email, draft in zip(emails_needing_response, drafts):
-                # Create Gmail draft
                 try:
-                    gmail.create_draft(
+                    # Create HTML draft
+                    draft_obj = gmail.create_draft(
                         thread_id=email["thread_id"],
                         to=email["sender"],
                         subject=draft["subject"],
                         body=draft["body"],
+                        is_html=True,  # NEW: Enable HTML formatting
                     )
-                    print(f"   ✅ Draft: {email['subject'][:50]}...")
+
+                    draft_objects.append(draft_obj)
+
+                    # Extract draft ID
+                    draft_id = draft_obj.get("id", "")
+                    print(f"   ✅ Draft: {email['subject'][:50]}... (ID: {draft_id[:10]}...)")
+
                 except Exception as e:
                     print(f"   ⚠️  Failed: {e}")
+                    draft_objects.append(None)  # Placeholder for failed drafts
 
-                # Update spreadsheet with draft
-                # (여기서는 간단히 생략, 실제로는 find & update 필요)
+        # === STEP 5: Update Spreadsheet ===
+        print("\n" + "="*80)
+        print("STEP 5: UPDATE GOOGLE SHEETS")
+        print("="*80)
+
+        print("\n📊 Adding emails to spreadsheet with draft links...")
+
+        for email in emails_needing_response:
+            classification = email.get('classification', {})
+
+            # Find corresponding draft object
+            idx = emails_needing_response.index(email)
+            draft_obj = draft_objects[idx] if idx < len(draft_objects) else None
+
+            # Extract draft info
+            if draft_obj:
+                draft_id = draft_obj.get("id", "")
+                draft_link = f'=HYPERLINK("https://mail.google.com/mail/#drafts?compose={draft_id}", "열기")'
+            else:
+                draft_id = ""
+                draft_link = ""
+
+            email_data = {
+                "status": "needs_response",
+                "priority": classification.get('priority', 3),
+                "subject": email.get('subject', ''),
+                "sender": email.get('sender', ''),
+                "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
+                "body": email.get('body', email.get('snippet', '')),
+                "thread_id": email.get('thread_id', ''),
+            }
+
+            sheets.add_email_row(
+                spreadsheet_id,
+                email_data,
+                draft_id=draft_id,
+                draft_link=draft_link,
+            )
+
+        print(f"✅ Added {len(emails_needing_response)} emails with draft links to spreadsheet")
 
         # === STEP 6: Batch Send (Optional) ===
         print("\n" + "="*80)
         print("STEP 6: BATCH SEND FROM SPREADSHEET (OPTIONAL)")
         print("="*80)
 
-        send_choice = input("\n📧 Send emails marked in spreadsheet? (y/N): ").strip().lower()
+        send_choice = input("\n📧 Send drafts marked in spreadsheet? (y/N): ").strip().lower()
 
         if send_choice == 'y':
-            print("\n🔍 Checking spreadsheet for emails to send...")
-            emails_to_send = sheets.get_emails_to_send(spreadsheet_id)
+            print("\n🔍 Checking spreadsheet for drafts to send...")
+            drafts_to_send = sheets.get_drafts_to_send(spreadsheet_id)
 
-            if not emails_to_send:
-                print("   No emails marked for sending")
+            if not drafts_to_send:
+                print("   No drafts marked for sending")
             else:
-                print(f"   Found {len(emails_to_send)} emails marked for sending")
+                print(f"   Found {len(drafts_to_send)} drafts marked:")
 
-                confirm = input(f"\n⚠️  Send {len(emails_to_send)} emails? (yes/no): ").strip().lower()
+                for draft_info in drafts_to_send:
+                    print(f"   - {draft_info['subject'][:50]} (to: {draft_info['sender']})")
+
+                confirm = input(f"\n⚠️  Send {len(drafts_to_send)} drafts? (yes/no): ").strip().lower()
 
                 if confirm == 'yes':
-                    print("\n📤 Sending emails...")
+                    print("\n📤 Sending drafts...")
 
-                    send_data = [
-                        {
-                            "to": email['draft_to'] or email['sender'],
-                            "subject": email['subject'],
-                            "body": email['draft_body'],
-                            "cc": email.get('draft_cc'),
-                            "thread_id": email.get('thread_id'),
-                        }
-                        for email in emails_to_send
-                    ]
-
-                    results = gmail.batch_send_emails(send_data)
+                    draft_ids = [d['draft_id'] for d in drafts_to_send]
+                    results = gmail.batch_send_drafts(draft_ids)  # NEW: Send existing drafts
 
                     # Update spreadsheet status
-                    for result, email in zip(results, emails_to_send):
+                    for result, draft_info in zip(results, drafts_to_send):
                         if result['success']:
                             sheets.update_email_status(
                                 spreadsheet_id,
-                                email['row_number'],
-                                "답장완료"
+                                draft_info['row_number'],
+                                "답장완료",
+                                uncheck_send_box=True,
                             )
-                            print(f"   ✅ Sent: {email['subject'][:50]}...")
+                            print(f"   ✅ Sent: {draft_info['subject'][:50]}...")
                         else:
-                            print(f"   ❌ Failed: {email['subject'][:50]}... - {result['error']}")
+                            error_msg = result['error']
+                            print(f"   ❌ Failed: {draft_info['subject'][:50]}... - {error_msg}")
 
                     success_count = sum(1 for r in results if r['success'])
-                    print(f"\n📧 Sent {success_count}/{len(results)} emails")
+                    print(f"\n📧 Successfully sent {success_count}/{len(results)} drafts")
 
         # === STEP 7: Results ===
         print("\n" + "="*80)

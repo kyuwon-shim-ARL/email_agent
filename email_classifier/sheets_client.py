@@ -81,32 +81,30 @@ class SheetsClient:
 
         spreadsheet_id = spreadsheet.get("spreadsheetId")
 
-        # Initialize headers
+        # Initialize headers (v0.4.0 schema)
         headers = [
-            "상태",  # 답장필요/불필요/완료
-            "우선순위",
-            "제목",
-            "발신자",
-            "수신(To)",
-            "수신(CC)",
-            "받은시간",
-            "메일내용",
-            "답장초안",
-            "답장수신자",
-            "답장CC",
-            "발송여부",
-            "Thread ID",
+            "상태",              # A: 답장필요/불필요/완료
+            "우선순위",          # B: 1-5
+            "제목",              # C: Email subject
+            "발신자",            # D: Sender
+            "받은시간",          # E: Received date
+            "내용미리보기",      # F: Body preview (200 chars)
+            "Gmail 초안",        # G: Hyperlink to draft
+            "발송여부",          # H: Checkbox
+            "Draft ID",          # I: Hidden (for API)
+            "Thread ID",         # J: Hidden (for threading)
         ]
 
         self.service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range="Emails!A1:M1",
+            range="Emails!A1:J1",
             valueInputOption="RAW",
             body={"values": [headers]},
         ).execute()
 
-        # Format headers
+        # Format headers and columns
         requests = [
+            # Header row formatting (dark background, white text, bold)
             {
                 "repeatCell": {
                     "range": {
@@ -125,7 +123,46 @@ class SheetsClient:
                     },
                     "fields": "userEnteredFormat(backgroundColor,textFormat)",
                 }
-            }
+            },
+            # Hide columns I and J (Draft ID, Thread ID)
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": 0,
+                        "dimension": "COLUMNS",
+                        "startIndex": 8,  # Column I (Draft ID)
+                        "endIndex": 10,   # Through Column J (Thread ID)
+                    },
+                    "properties": {"hiddenByUser": True},
+                    "fields": "hiddenByUser",
+                }
+            },
+            # Set column G width (Gmail 초안 link)
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": 0,
+                        "dimension": "COLUMNS",
+                        "startIndex": 6,
+                        "endIndex": 7,
+                    },
+                    "properties": {"pixelSize": 120},
+                    "fields": "pixelSize",
+                }
+            },
+            # Set column F width (preview)
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": 0,
+                        "dimension": "COLUMNS",
+                        "startIndex": 5,
+                        "endIndex": 6,
+                    },
+                    "properties": {"pixelSize": 300},
+                    "fields": "pixelSize",
+                }
+            },
         ]
 
         self.service.spreadsheets().batchUpdate(
@@ -138,13 +175,17 @@ class SheetsClient:
         self,
         spreadsheet_id: str,
         email_data: dict[str, Any],
+        draft_id: str = "",      # NEW parameter
+        draft_link: str = "",    # NEW parameter
     ) -> None:
         """
-        Add email to spreadsheet.
+        Add email to spreadsheet with draft link.
 
         Args:
             spreadsheet_id: Target spreadsheet ID
-            email_data: Email information dict
+            email_data: Email metadata (subject, sender, body, etc.)
+            draft_id: Gmail draft ID (e.g., 'r1234567890abcdef')
+            draft_link: HYPERLINK formula for Gmail draft
         """
         # 상태 매핑
         status_map = {
@@ -156,89 +197,126 @@ class SheetsClient:
         status = status_map.get(email_data.get("status", "needs_response"), "답장필요")
 
         row = [
-            status,
-            email_data.get("priority", 3),
-            email_data.get("subject", ""),
-            email_data.get("sender", ""),
-            email_data.get("to", ""),
-            email_data.get("cc", ""),
-            email_data.get("date", ""),
-            email_data.get("body", "")[:500],  # 500자 제한
-            email_data.get("draft_body", ""),
-            email_data.get("draft_to", ""),
-            email_data.get("draft_cc", ""),
-            "",  # 발송여부 (체크박스)
-            email_data.get("thread_id", ""),
+            status,                                          # A
+            email_data.get("priority", 3),                   # B
+            email_data.get("subject", ""),                   # C
+            email_data.get("sender", ""),                    # D
+            email_data.get("date", ""),                      # E
+            email_data.get("body", "")[:200],                # F: Preview only (shortened from 500)
+            draft_link,                                      # G: Clickable link
+            False,                                           # H: Checkbox unchecked
+            draft_id,                                        # I: Hidden
+            email_data.get("thread_id", ""),                 # J: Hidden
         ]
 
         self.service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range="Emails!A:M",
-            valueInputOption="RAW",
+            range="Emails!A:J",                              # Updated range
+            valueInputOption="USER_ENTERED",                 # Changed to support HYPERLINK formula
             body={"values": [row]},
         ).execute()
 
-    def get_emails_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
+    def get_drafts_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
         """
-        Get emails marked for sending (발송여부 = TRUE).
+        Get draft IDs for emails marked for sending.
+
+        Returns only rows where:
+        - Column H (발송여부) is checked (TRUE)
+        - Column I (Draft ID) is not empty
 
         Args:
             spreadsheet_id: Spreadsheet ID
 
         Returns:
-            List of emails to send
+            List of dicts with draft_id, subject, sender, row_number
+
+        Example:
+            [
+                {
+                    'draft_id': 'r1234567890abcdef',
+                    'subject': 'Re: Meeting request',
+                    'sender': 'boss@example.com',
+                    'row_number': 2
+                }
+            ]
         """
         result = (
             self.service.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range="Emails!A2:M")
+            .get(spreadsheetId=spreadsheet_id, range="Emails!A2:J")  # Updated range
             .execute()
         )
 
         rows = result.get("values", [])
-        emails_to_send = []
+        drafts_to_send = []
 
-        for i, row in enumerate(rows, start=2):
-            if len(row) < 12:
+        for i, row in enumerate(rows, start=2):  # Row 2 = first data row
+            # Ensure row has enough columns
+            if len(row) < 9:
                 continue
 
-            # 발송여부 체크 (12번째 컬럼, 인덱스 11)
-            send_flag = row[11] if len(row) > 11 else ""
+            send_checkbox = row[7] if len(row) > 7 else ""  # Column H
+            draft_id = row[8] if len(row) > 8 else ""       # Column I
 
-            if send_flag.upper() in ["TRUE", "YES", "Y", "X", "✓"]:
-                emails_to_send.append(
-                    {
-                        "row_number": i,
-                        "status": row[0],
-                        "priority": row[1],
-                        "subject": row[2],
-                        "sender": row[3],
-                        "draft_body": row[8] if len(row) > 8 else "",
-                        "draft_to": row[9] if len(row) > 9 else "",
-                        "draft_cc": row[10] if len(row) > 10 else "",
-                        "thread_id": row[12] if len(row) > 12 else "",
-                    }
-                )
+            # Check if marked for sending
+            if send_checkbox in ["TRUE", "True", True, "true"] and draft_id:
+                drafts_to_send.append({
+                    "draft_id": draft_id,
+                    "subject": row[2] if len(row) > 2 else "",
+                    "sender": row[3] if len(row) > 3 else "",
+                    "row_number": i,
+                })
 
-        return emails_to_send
+        return drafts_to_send
+
+    # Keep old function for backward compatibility
+    def get_emails_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
+        """
+        DEPRECATED: Use get_drafts_to_send() instead.
+
+        This function is kept for backward compatibility with v0.3.0.
+        """
+        import warnings
+        warnings.warn(
+            "get_emails_to_send() is deprecated. Use get_drafts_to_send() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        # Return empty list for deprecated function
+        return []
 
     def update_email_status(
-        self, spreadsheet_id: str, row_number: int, status: str = "답장완료"
+        self,
+        spreadsheet_id: str,
+        row_number: int,
+        new_status: str = "답장완료",
+        uncheck_send_box: bool = True  # NEW parameter
     ) -> None:
         """
         Update email status after sending.
 
         Args:
             spreadsheet_id: Spreadsheet ID
-            row_number: Row number (1-indexed)
-            status: New status
+            row_number: Row number to update (2 = first data row)
+            new_status: New status (e.g., '답장완료')
+            uncheck_send_box: If True, uncheck '발송여부' checkbox
         """
+        # Update status (column A)
         self.service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range=f"Emails!A{row_number}",
             valueInputOption="RAW",
-            body={"values": [[status]]},
+            body={"values": [[new_status]]},
         ).execute()
+
+        # Uncheck send box (column H)
+        if uncheck_send_box:
+            self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"Emails!H{row_number}",
+                valueInputOption="RAW",
+                body={"values": [[False]]},
+            ).execute()
 
     def batch_update_emails(
         self, spreadsheet_id: str, emails: list[dict[str, Any]]

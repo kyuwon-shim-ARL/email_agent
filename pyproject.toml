@@ -1,7 +1,7 @@
 [project]
 name = "simple-email-classifier"
-version = "0.3.0"
-description = "Gmail email classifier with Claude Code + Google Sheets integration (no API costs!)"
+version = "0.4.0"
+description = "Gmail email classifier with Claude Code + Hybrid Gmail+Sheets architecture (no API costs!)"
 requires-python = ">=3.11"
 dependencies = [
     "google-api-python-client>=2.100.0",
