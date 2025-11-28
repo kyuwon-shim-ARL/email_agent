@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",  # 초안 작성 권한
+    "https://www.googleapis.com/auth/gmail.send",  # 메일 발송 권한
 ]
 
 
@@ -155,6 +156,87 @@ class GmailClient:
 
         return draft
 
+    def send_email(
+        self, to: str, subject: str, body: str, cc: str | None = None, thread_id: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Send an email directly (for batch sending).
+
+        Args:
+            to: Recipient email address
+            subject: Email subject
+            body: Email body
+            cc: CC recipients (comma-separated)
+            thread_id: Thread ID for replies
+
+        Returns:
+            Sent message information
+        """
+        import base64
+        from email.mime.text import MIMEText
+
+        # Create message
+        message = MIMEText(body)
+        message["to"] = to
+        message["subject"] = subject
+        if cc:
+            message["cc"] = cc
+
+        # Encode message
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+        # Send email
+        send_message = {"raw": raw}
+        if thread_id:
+            send_message["threadId"] = thread_id
+
+        sent = (
+            self.service.users()
+            .messages()
+            .send(userId="me", body=send_message)
+            .execute()
+        )
+
+        return sent
+
+    def batch_send_emails(self, emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Send multiple emails in batch.
+
+        Args:
+            emails: List of email dicts with 'to', 'subject', 'body', 'cc', 'thread_id'
+
+        Returns:
+            List of results with success/failure status
+        """
+        results = []
+
+        for email in emails:
+            try:
+                sent = self.send_email(
+                    to=email.get("to", ""),
+                    subject=email.get("subject", ""),
+                    body=email.get("body", ""),
+                    cc=email.get("cc"),
+                    thread_id=email.get("thread_id"),
+                )
+
+                results.append({
+                    "email": email,
+                    "success": True,
+                    "message_id": sent.get("id"),
+                    "error": None,
+                })
+            except Exception as e:
+                results.append({
+                    "email": email,
+                    "success": False,
+                    "message_id": None,
+                    "error": str(e),
+                })
+
+        return results
+
     def get_sent_emails(self, max_results: int = 50) -> list[dict[str, Any]]:
         """
         Get user's sent emails for style analysis.
@@ -263,6 +345,13 @@ class GmailClient:
                         "body": body,
                     })
 
+        # Calculate priority score (발신 가중치 적용)
+        # 내가 보낸 메일에 2배 가중치 (회사 공지 등 수신만 하는 경우 중요도 낮음)
+        weighted_score = len(sent_to_sender) * 2 + len(received_from_sender)
+
+        # 첫 연락 여부 확인
+        is_first_contact = len(sent_to_sender) == 0 and len(received_from_sender) == 1
+
         return {
             "sender_email": search_email,
             "sent_to_sender": sent_to_sender,
@@ -270,4 +359,6 @@ class GmailClient:
             "total_sent": len(sent_to_sender),
             "total_received": len(received_from_sender),
             "total_exchanges": len(sent_to_sender) + len(received_from_sender),
+            "weighted_score": weighted_score,
+            "is_first_contact": is_first_contact,
         }

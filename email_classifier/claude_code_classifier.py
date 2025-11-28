@@ -69,12 +69,28 @@ Guidelines:
 - Newsletters, notifications, automated messages → NO response needed
 - Direct questions, meeting requests, personal messages → Response needed
 - Consider sender relationship and urgency
-- Priority levels (1-5):
-  * 5 = Urgent/VIP (frequent contacts, direct questions)
-  * 4 = Important (known contacts, action items)
-  * 3 = Normal (regular correspondence)
-  * 2 = Low priority (FYI, optional)
-  * 1 = Very low (newsletters, automated)
+
+Priority levels (1-5):
+  * 5 = HIGHEST:
+    - First contact (처음 연락) - needs investigation
+    - VIP contacts with sent emails > 10 (내가 자주 보낸 사람)
+    - Direct urgent questions
+  * 4 = High:
+    - Known frequent contacts (교신 10+ times)
+    - Action items from manager
+  * 3 = Normal:
+    - Regular correspondence (교신 3-10 times)
+    - General work emails
+  * 2 = Low:
+    - Broadcast emails (수신만 한 경우)
+    - FYI, optional
+  * 1 = Very low:
+    - Newsletters, automated notifications
+
+**IMPORTANT Priority Rules:**
+- 첫 연락 (is_first_contact = True) → Priority 5
+- 내가 보낸 메일 많음 (sent > 10) → Priority 5
+- 교신 많지만 내가 안 보냄 (received only) → Priority 2-3
 
 Emails to classify:
 
@@ -85,8 +101,17 @@ Emails to classify:
 
             if sender_histories and sender in sender_histories:
                 history = sender_histories[sender]
-                if history['total_exchanges'] > 0:
-                    history_info = f"\n   [Conversation history: {history['total_exchanges']} previous exchanges]"
+                total = history.get('total_exchanges', 0)
+                sent = history.get('total_sent', 0)
+                received = history.get('total_received', 0)
+                is_first = history.get('is_first_contact', False)
+                weighted = history.get('weighted_score', 0)
+
+                if total > 0 or is_first:
+                    history_info = f"\n   [History: {total} exchanges (sent: {sent}, received: {received})"
+                    if is_first:
+                        history_info += " - **FIRST CONTACT**"
+                    history_info += f", weighted_score: {weighted}]"
 
             prompt += f"""
 {i}. Subject: {email['subject']}
