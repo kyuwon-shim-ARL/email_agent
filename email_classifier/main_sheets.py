@@ -1,9 +1,11 @@
 """
 Claude Code email classifier with Google Sheets integration.
 
-New Features:
-- Google Sheets tracking for all emails
-- Improved priority system (발신 가중치 + 첫 연락)
+v0.5.0 Features:
+- Google Sheets tracking with 발신자 관리 tab
+- 3-dimensional priority scoring (skill-based)
+- Gmail label management (status + priority)
+- Sender importance tracking and scoring
 - Batch sending from spreadsheet
 - Status management (답장필요/불필요/완료)
 """
@@ -131,6 +133,35 @@ def main() -> None:
         for email, classification in zip(emails, classifications):
             email['classification'] = classification
 
+        # Setup Gmail labels
+        print("\n🏷️  Setting up Gmail labels...")
+        label_ids = gmail.setup_email_labels()
+        print(f"   ✅ Created/verified {len(label_ids)} labels")
+
+        # Apply labels to classified emails
+        print("\n🏷️  Applying labels to emails...")
+        for email in emails:
+            classification = email.get('classification', {})
+            requires_response = classification.get('requires_response', False)
+            priority = classification.get('priority', 3)
+
+            # Map to status
+            if requires_response:
+                status = "답장필요"
+            else:
+                status = "답장불필요"
+
+            try:
+                gmail.apply_labels_to_email(
+                    message_id=email['id'],
+                    status=status,
+                    priority=priority,
+                    label_ids=label_ids
+                )
+                print(f"   ✅ {status} | P{priority} - {email['subject'][:40]}...")
+            except Exception as e:
+                print(f"   ⚠️  Failed to label: {email['subject'][:40]}... - {e}")
+
         # === STEP 4: Generate Drafts ===
         emails_needing_response = [e for e in emails if e.get('classification', {}).get('requires_response')]
 
@@ -242,6 +273,30 @@ def main() -> None:
 
         print(f"✅ Added {len(emails_needing_response)} emails with draft links to spreadsheet")
 
+        # === STEP 5.5: Update Sender Management Tab ===
+        print("\n" + "="*80)
+        print("STEP 5.5: UPDATE SENDER MANAGEMENT")
+        print("="*80)
+
+        print("\n📊 Collecting sender statistics...")
+        all_sender_stats = gmail.collect_all_sender_stats(
+            max_emails=200,
+            classified_emails=emails  # Pass classified emails for P4-5 tracking
+        )
+
+        print(f"   → Found {len(all_sender_stats)} senders")
+
+        print("\n📝 Updating 발신자 관리 tab...")
+        for sender_email, stats in all_sender_stats.items():
+            sheets.add_or_update_sender(
+                spreadsheet_id,
+                sender_email,
+                stats
+            )
+
+        print(f"   ✅ Updated {len(all_sender_stats)} senders in 발신자 관리 tab")
+        print("   💡 Review and manually grade senders (VIP/중요/보통/낮음/차단)")
+
         # === STEP 6: Batch Send (Optional) ===
         print("\n" + "="*80)
         print("STEP 6: BATCH SEND FROM SPREADSHEET (OPTIONAL)")
@@ -269,15 +324,32 @@ def main() -> None:
                     draft_ids = [d['draft_id'] for d in drafts_to_send]
                     results = gmail.batch_send_drafts(draft_ids)  # NEW: Send existing drafts
 
-                    # Update spreadsheet status
+                    # Update spreadsheet status and Gmail labels
                     for result, draft_info in zip(results, drafts_to_send):
                         if result['success']:
+                            # Update Sheets status
                             sheets.update_email_status(
                                 spreadsheet_id,
                                 draft_info['row_number'],
                                 "답장완료",
                                 uncheck_send_box=True,
                             )
+
+                            # Update Gmail label (답장필요 → 답장완료)
+                            try:
+                                message_id = result.get('message_id')
+                                if message_id:
+                                    # Remove old labels and apply 답장완료
+                                    gmail.remove_all_classification_labels(message_id, label_ids)
+                                    gmail.apply_labels_to_email(
+                                        message_id=message_id,
+                                        status="답장완료",
+                                        priority=3,  # Keep priority label
+                                        label_ids=label_ids
+                                    )
+                            except Exception as e:
+                                print(f"   ⚠️  Failed to update label: {e}")
+
                             print(f"   ✅ Sent: {draft_info['subject'][:50]}...")
                         else:
                             error_msg = result['error']

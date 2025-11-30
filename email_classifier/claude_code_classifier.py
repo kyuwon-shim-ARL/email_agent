@@ -54,87 +54,105 @@ class ClaudeCodeClassifier:
         self, emails: list[dict], sender_histories: dict[str, SenderHistory] | None = None
     ) -> str:
         """
-        Prepare all emails for batch classification with priority.
+        Prepare all emails for batch classification with detailed priority scoring.
+
+        Uses the 'prioritize-email' skill for sophisticated 3-dimensional scoring.
 
         Args:
-            emails: List of email dicts with subject, sender, snippet
+            emails: List of email dicts with subject, sender, snippet, body
             sender_histories: Optional dict mapping sender email to conversation history
 
         Returns:
             Path to the prompt file
         """
-        prompt = """I need you to classify these emails to determine which require responses and assign priorities.
+        prompt = """Use the 'prioritize-email' skill to analyze these emails.
 
-Guidelines:
-- Newsletters, notifications, automated messages → NO response needed
-- Direct questions, meeting requests, personal messages → Response needed
-- Consider sender relationship and urgency
+For each email, calculate:
+1. Sender Importance (0-100): relationship depth + role/position + recent activity
+2. Content Urgency (0-100): time sensitivity + action required + content importance
+3. Context Modifiers (-20 to +20): bonuses and penalties
+4. Final Priority (1-5): based on weighted calculation
 
-Priority levels (1-5):
-  * 5 = HIGHEST:
-    - First contact (처음 연락) - needs investigation
-    - VIP contacts with sent emails > 10 (내가 자주 보낸 사람)
-    - Direct urgent questions
-  * 4 = High:
-    - Known frequent contacts (교신 10+ times)
-    - Action items from manager
-  * 3 = Normal:
-    - Regular correspondence (교신 3-10 times)
-    - General work emails
-  * 2 = Low:
-    - Broadcast emails (수신만 한 경우)
-    - FYI, optional
-  * 1 = Very low:
-    - Newsletters, automated notifications
+IMPORTANT: Analyze each email independently and provide detailed scoring breakdown.
 
-**IMPORTANT Priority Rules:**
-- 첫 연락 (is_first_contact = True) → Priority 5
-- 내가 보낸 메일 많음 (sent > 10) → Priority 5
-- 교신 많지만 내가 안 보냄 (received only) → Priority 2-3
-
-Emails to classify:
+Emails to analyze:
 
 """
         for i, email in enumerate(emails, 1):
             sender = email['sender']
-            history_info = ""
+
+            # Prepare conversation history data
+            sent = 0
+            received = 0
+            recent_7days = 0
+            is_first = False
+            weighted = 0
 
             if sender_histories and sender in sender_histories:
                 history = sender_histories[sender]
-                total = history.get('total_exchanges', 0)
                 sent = history.get('total_sent', 0)
                 received = history.get('total_received', 0)
+                recent_7days = history.get('recent_7days', 0)  # TODO: implement recent tracking
                 is_first = history.get('is_first_contact', False)
                 weighted = history.get('weighted_score', 0)
 
-                if total > 0 or is_first:
-                    history_info = f"\n   [History: {total} exchanges (sent: {sent}, received: {received})"
-                    if is_first:
-                        history_info += " - **FIRST CONTACT**"
-                    history_info += f", weighted_score: {weighted}]"
-
+            # Format email for skill analysis
             prompt += f"""
-{i}. Subject: {email['subject']}
-   From: {sender}{history_info}
-   Preview: {email['snippet'][:200]}...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EMAIL #{i}
+
+Subject: {email['subject']}
+From: {sender}
+Body Preview: {email.get('body', email['snippet'])[:500]}
+
+CONVERSATION HISTORY:
+- Total sent to this sender: {sent}
+- Total received from this sender: {received}
+- Recent exchanges (last 7 days): {recent_7days}
+- First contact: {is_first}
+- Weighted score: {weighted}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 """
 
         prompt += """
-Respond with a JSON array where each object has:
+Respond with a JSON array containing detailed analysis for each email.
+
+For each email, provide:
 {
   "email_index": <number>,
   "requires_response": <true/false>,
   "confidence": <0.0-1.0>,
-  "reason": "<brief explanation>",
-  "priority": <1-5>
+  "sender_importance": {
+    "relationship_depth": {"score": <0-50>, "reason": "explanation"},
+    "role_position": {"score": <0-30>, "reason": "explanation"},
+    "recent_activity": {"score": <0-20>, "reason": "explanation"},
+    "total": <0-100>
+  },
+  "content_urgency": {
+    "time_sensitivity": {"score": <0-40>, "reason": "explanation"},
+    "action_required": {"score": <0-35>, "reason": "explanation"},
+    "content_importance": {"score": <0-25>, "reason": "explanation"},
+    "total": <0-100>
+  },
+  "context_modifiers": {
+    "bonuses": ["list of bonuses with scores"],
+    "penalties": ["list of penalties with scores"],
+    "total": <-20 to +20>
+  },
+  "calculation": {
+    "formula": "string showing calculation",
+    "final_score": <number>,
+    "normalized_score": <0-100>
+  },
+  "priority": <1-5>,
+  "priority_label": "최저/낮음/보통/긴급/최우선",
+  "summary": "brief summary",
+  "reason": "detailed explanation"
 }
 
-Example:
-[
-  {"email_index": 1, "requires_response": true, "confidence": 0.95, "reason": "Direct question from frequent contact", "priority": 5},
-  {"email_index": 2, "requires_response": false, "confidence": 0.99, "reason": "Automated newsletter", "priority": 1}
-]
+IMPORTANT: Use the scoring framework from 'prioritize-email' skill. Be thorough and explain your reasoning.
 """
 
         prompt_file = self.work_dir / "classify_batch.txt"
@@ -146,27 +164,49 @@ Example:
         self, response_json: str
     ) -> list[ClassificationResult]:
         """
-        Parse Claude's batch classification response.
+        Parse Claude's detailed batch classification response.
+
+        Extracts both basic classification and detailed priority scoring.
 
         Args:
-            response_json: JSON string from Claude
+            response_json: JSON string from Claude (with detailed scoring)
 
         Returns:
-            List of classification results with priority
+            List of classification results with priority and detailed scores
         """
         try:
             results = json.loads(response_json)
-            return [
-                {
+            parsed = []
+
+            for r in results:
+                # Basic classification (backward compatible)
+                basic = {
                     "requires_response": r["requires_response"],
                     "confidence": r["confidence"],
-                    "reason": r["reason"],
-                    "priority": r.get("priority", 3),  # Default priority 3
+                    "reason": r.get("reason", r.get("summary", "")),
+                    "priority": r.get("priority", 3),
                 }
-                for r in results
-            ]
+
+                # Add detailed scoring if available
+                if "sender_importance" in r:
+                    basic["sender_importance"] = r["sender_importance"]
+                if "content_urgency" in r:
+                    basic["content_urgency"] = r["content_urgency"]
+                if "context_modifiers" in r:
+                    basic["context_modifiers"] = r["context_modifiers"]
+                if "calculation" in r:
+                    basic["calculation"] = r["calculation"]
+                if "priority_label" in r:
+                    basic["priority_label"] = r["priority_label"]
+                if "summary" in r:
+                    basic["summary"] = r["summary"]
+
+                parsed.append(basic)
+
+            return parsed
         except (json.JSONDecodeError, KeyError) as e:
             print(f"❌ Failed to parse response: {e}")
+            print(f"Response: {response_json[:500]}...")
             return []
 
     def prepare_style_analysis(

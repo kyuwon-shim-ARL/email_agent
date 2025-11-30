@@ -440,3 +440,296 @@ class GmailClient:
             "weighted_score": weighted_score,
             "is_first_contact": is_first_contact,
         }
+
+    def collect_all_sender_stats(
+        self,
+        max_emails: int = 200,
+        classified_emails: list[dict[str, Any]] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Collect statistics for all senders for sender management tab.
+
+        This function analyzes recent emails and calculates stats needed
+        for automatic sender importance scoring.
+
+        Args:
+            max_emails: Maximum number of emails to analyze (default: 200)
+            classified_emails: Optional list of already classified emails with priority scores
+
+        Returns:
+            Dict mapping sender email to stats:
+            {
+                'sender@example.com': {
+                    'name': 'John Doe',
+                    'total_sent': 5,
+                    'total_received': 10,
+                    'p45_count': 3,  # Count of P4-5 priority emails
+                    'total_emails': 10,  # Total received from this sender
+                    'recent_7days': 2,
+                    'last_contact_date': '2024-01-15',
+                }
+            }
+        """
+        import re
+        from datetime import datetime, timedelta
+        from collections import defaultdict
+
+        sender_stats = defaultdict(lambda: {
+            'name': '',
+            'total_sent': 0,
+            'total_received': 0,
+            'p45_count': 0,
+            'total_emails': 0,
+            'recent_7days': 0,
+            'last_contact_date': '',
+        })
+
+        # Get recent emails (both inbox and sent)
+        query = 'in:inbox OR in:sent'
+        results = (
+            self.service.users()
+            .messages()
+            .list(userId="me", q=query, maxResults=max_emails)
+            .execute()
+        )
+
+        messages = results.get("messages", [])
+        seven_days_ago = datetime.now() - timedelta(days=7)
+
+        # Build priority map from classified emails if provided
+        priority_map = {}
+        if classified_emails:
+            for email in classified_emails:
+                sender = email.get('sender', '')
+                # Extract email from "Name <email>" format
+                email_match = re.search(r'<(.+?)>', sender)
+                sender_email = email_match.group(1) if email_match else sender
+                priority = email.get('priority', 3)
+
+                if sender_email not in priority_map:
+                    priority_map[sender_email] = []
+                priority_map[sender_email].append(priority)
+
+        for msg in messages:
+            # Get message details
+            message = (
+                self.service.users().messages().get(
+                    userId="me", id=msg["id"], format="metadata",
+                    metadataHeaders=["From", "To", "Date"]
+                ).execute()
+            )
+
+            headers = message["payload"]["headers"]
+            from_header = next((h["value"] for h in headers if h["name"] == "From"), "")
+            to_header = next((h["value"] for h in headers if h["name"] == "To"), "")
+            date_header = next((h["value"] for h in headers if h["name"] == "Date"), "")
+
+            # Parse date
+            try:
+                # Simple date parsing (handles most formats)
+                msg_date = datetime.strptime(date_header.split(' +')[0].split(' -')[0].strip(),
+                                            "%a, %d %b %Y %H:%M:%S")
+            except:
+                msg_date = datetime.now()
+
+            # Determine if sent or received
+            is_sent = 'SENT' in message.get('labelIds', [])
+
+            # Extract sender email and name
+            sender_match = re.search(r'(.+?)\s*<(.+?)>', from_header)
+            if sender_match:
+                sender_name = sender_match.group(1).strip(' "\'')
+                sender_email = sender_match.group(2)
+            else:
+                sender_name = ''
+                sender_email = from_header
+
+            # Skip if it's me (for sent emails, track recipient instead)
+            if is_sent:
+                # For sent emails, extract recipient
+                recipient_match = re.search(r'<(.+?)>', to_header)
+                sender_email = recipient_match.group(1) if recipient_match else to_header
+                sender_stats[sender_email]['total_sent'] += 1
+            else:
+                # Received email
+                sender_stats[sender_email]['name'] = sender_name or sender_stats[sender_email]['name']
+                sender_stats[sender_email]['total_received'] += 1
+                sender_stats[sender_email]['total_emails'] += 1
+
+                # Check priority (from classified_emails if available)
+                if sender_email in priority_map:
+                    # Use average priority from classified emails
+                    avg_priority = sum(priority_map[sender_email]) / len(priority_map[sender_email])
+                    if avg_priority >= 4:
+                        sender_stats[sender_email]['p45_count'] += 1
+
+            # Update last contact date
+            date_str = msg_date.strftime('%Y-%m-%d')
+            if not sender_stats[sender_email]['last_contact_date'] or \
+               date_str > sender_stats[sender_email]['last_contact_date']:
+                sender_stats[sender_email]['last_contact_date'] = date_str
+
+            # Check if within last 7 days
+            if msg_date >= seven_days_ago:
+                sender_stats[sender_email]['recent_7days'] += 1
+
+        # Convert defaultdict to regular dict and filter out low-activity senders
+        result = {}
+        for email, stats in sender_stats.items():
+            # Only include senders with at least 1 received email
+            if stats['total_received'] > 0:
+                result[email] = dict(stats)
+
+        return result
+
+    def create_or_get_label(self, label_name: str, color: dict[str, str] | None = None) -> str:
+        """
+        Create a Gmail label or get existing one.
+
+        Args:
+            label_name: Label name (e.g., "답장필요", "P5-최우선")
+            color: Optional color dict with 'backgroundColor' and 'textColor'
+                   e.g., {'backgroundColor': '#fb4c2f', 'textColor': '#ffffff'}
+
+        Returns:
+            Label ID
+
+        Example:
+            label_id = gmail.create_or_get_label(
+                "P5-최우선",
+                {'backgroundColor': '#fb4c2f', 'textColor': '#ffffff'}
+            )
+        """
+        # Check if label already exists
+        results = self.service.users().labels().list(userId="me").execute()
+        labels = results.get("labels", [])
+
+        for label in labels:
+            if label["name"] == label_name:
+                return label["id"]
+
+        # Create new label
+        label_object = {
+            "name": label_name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        }
+
+        if color:
+            label_object["color"] = color
+
+        created = (
+            self.service.users()
+            .labels()
+            .create(userId="me", body=label_object)
+            .execute()
+        )
+
+        return created["id"]
+
+    def setup_email_labels(self) -> dict[str, str]:
+        """
+        Set up all email classification labels with colors.
+
+        Creates 8 labels:
+        - 3 status labels: 답장필요, 답장불필요, 답장완료
+        - 5 priority labels: P1-최저, P2-낮음, P3-보통, P4-긴급, P5-최우선
+
+        Returns:
+            Dict mapping label name to label ID
+
+        Example:
+            label_ids = gmail.setup_email_labels()
+            # {'답장필요': 'Label_123', 'P5-최우선': 'Label_456', ...}
+        """
+        labels_config = {
+            # Status labels
+            "답장필요": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},      # Red
+            "답장불필요": {"backgroundColor": "#cccccc", "textColor": "#000000"},    # Gray
+            "답장완료": {"backgroundColor": "#16a766", "textColor": "#ffffff"},      # Green
+
+            # Priority labels
+            "P1-최저": {"backgroundColor": "#efefef", "textColor": "#000000"},       # Light gray
+            "P2-낮음": {"backgroundColor": "#a4c2f4", "textColor": "#000000"},       # Light blue
+            "P3-보통": {"backgroundColor": "#fad165", "textColor": "#000000"},       # Yellow
+            "P4-긴급": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},       # Orange-red
+            "P5-최우선": {"backgroundColor": "#cc0000", "textColor": "#ffffff"},     # Dark red
+        }
+
+        label_ids = {}
+        for label_name, color in labels_config.items():
+            label_id = self.create_or_get_label(label_name, color)
+            label_ids[label_name] = label_id
+
+        return label_ids
+
+    def apply_labels_to_email(
+        self,
+        message_id: str,
+        status: str,
+        priority: int,
+        label_ids: dict[str, str]
+    ) -> None:
+        """
+        Apply status and priority labels to an email.
+
+        Args:
+            message_id: Gmail message ID
+            status: Status ("답장필요", "답장불필요", "답장완료")
+            priority: Priority (1-5)
+            label_ids: Dict mapping label names to IDs (from setup_email_labels)
+
+        Example:
+            label_ids = gmail.setup_email_labels()
+            gmail.apply_labels_to_email(
+                message_id="abc123",
+                status="답장필요",
+                priority=5,
+                label_ids=label_ids
+            )
+        """
+        # Map priority number to label name
+        priority_labels = {
+            1: "P1-최저",
+            2: "P2-낮음",
+            3: "P3-보통",
+            4: "P4-긴급",
+            5: "P5-최우선",
+        }
+
+        # Get label IDs to add
+        labels_to_add = []
+
+        if status in label_ids:
+            labels_to_add.append(label_ids[status])
+
+        priority_label = priority_labels.get(priority, "P3-보통")
+        if priority_label in label_ids:
+            labels_to_add.append(label_ids[priority_label])
+
+        # Apply labels
+        if labels_to_add:
+            self.service.users().messages().modify(
+                userId="me",
+                id=message_id,
+                body={"addLabelIds": labels_to_add}
+            ).execute()
+
+    def remove_all_classification_labels(self, message_id: str, label_ids: dict[str, str]) -> None:
+        """
+        Remove all classification labels from an email.
+
+        Useful when reclassifying an email.
+
+        Args:
+            message_id: Gmail message ID
+            label_ids: Dict mapping label names to IDs (from setup_email_labels)
+        """
+        labels_to_remove = list(label_ids.values())
+
+        if labels_to_remove:
+            self.service.users().messages().modify(
+                userId="me",
+                id=message_id,
+                body={"removeLabelIds": labels_to_remove}
+            ).execute()

@@ -69,6 +69,12 @@ class SheetsClient:
                         "title": "Emails",
                         "gridProperties": {"frozenRowCount": 1},
                     }
+                },
+                {
+                    "properties": {
+                        "title": "발신자 관리",
+                        "gridProperties": {"frozenRowCount": 1},
+                    }
                 }
             ],
         }
@@ -168,6 +174,9 @@ class SheetsClient:
         self.service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id, body={"requests": requests}
         ).execute()
+
+        # Initialize 발신자 관리 tab
+        self._initialize_sender_management_tab(spreadsheet_id)
 
         return spreadsheet_id
 
@@ -360,3 +369,362 @@ class SheetsClient:
         self.service.spreadsheets().values().batchUpdate(
             spreadsheetId=spreadsheet_id, body=body
         ).execute()
+
+    def _initialize_sender_management_tab(self, spreadsheet_id: str) -> None:
+        """
+        Initialize the 발신자 관리 tab with headers and formatting.
+
+        Internal helper called by create_email_tracker().
+        """
+        # Get sheet ID for 발신자 관리 tab
+        spreadsheet = self.service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id
+        ).execute()
+
+        sender_sheet_id = None
+        for sheet in spreadsheet['sheets']:
+            if sheet['properties']['title'] == '발신자 관리':
+                sender_sheet_id = sheet['properties']['sheetId']
+                break
+
+        if sender_sheet_id is None:
+            return  # Tab doesn't exist, skip
+
+        # Set up headers
+        headers = [
+            "발신자",           # A: Sender email
+            "이름",             # B: Name (auto-extracted or manual)
+            "자동점수",         # C: Auto score (0-100)
+            "수동등급",         # D: Manual grade (dropdown)
+            "확정점수",         # E: Final score (0-100)
+            "총 교신",          # F: Total exchanges
+            "보낸 횟수",        # G: Sent count
+            "받은 횟수",        # H: Received count
+            "P4-5 비율",       # I: High priority ratio (%)
+            "최근7일",          # J: Recent 7 days
+            "마지막 교신일",    # K: Last contact date
+            "메모",             # L: User notes
+        ]
+
+        self.service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="발신자 관리!A1:L1",
+            valueInputOption="RAW",
+            body={"values": [headers]},
+        ).execute()
+
+        # Format headers and add data validation
+        requests = [
+            # Header row formatting
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sender_sheet_id,
+                        "startRowIndex": 0,
+                        "endRowIndex": 1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 0.2, "green": 0.2, "blue": 0.2},
+                            "textFormat": {
+                                "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                                "bold": True,
+                            },
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)",
+                }
+            },
+            # Data validation for 수동등급 (column D)
+            {
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": sender_sheet_id,
+                        "startRowIndex": 1,  # Start from row 2 (first data row)
+                        "startColumnIndex": 3,  # Column D
+                        "endColumnIndex": 4,
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "VIP"},
+                                {"userEnteredValue": "중요"},
+                                {"userEnteredValue": "보통"},
+                                {"userEnteredValue": "낮음"},
+                                {"userEnteredValue": "차단"},
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": True,
+                    }
+                }
+            },
+            # Conditional formatting for 확정점수 (column E)
+            {
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sender_sheet_id,
+                            "startRowIndex": 1,
+                            "startColumnIndex": 4,
+                            "endColumnIndex": 5,
+                        }],
+                        "gradientRule": {
+                            "minpoint": {
+                                "color": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                                "type": "NUMBER",
+                                "value": "0",
+                            },
+                            "midpoint": {
+                                "color": {"red": 1, "green": 0.9, "blue": 0.4},
+                                "type": "NUMBER",
+                                "value": "50",
+                            },
+                            "maxpoint": {
+                                "color": {"red": 0.2, "green": 0.7, "blue": 0.3},
+                                "type": "NUMBER",
+                                "value": "100",
+                            },
+                        }
+                    },
+                    "index": 0,
+                }
+            },
+            # Set column widths
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sender_sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 0,
+                        "endIndex": 1,
+                    },
+                    "properties": {"pixelSize": 200},  # 발신자
+                    "fields": "pixelSize",
+                }
+            },
+            {
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": sender_sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 11,
+                        "endIndex": 12,
+                    },
+                    "properties": {"pixelSize": 300},  # 메모
+                    "fields": "pixelSize",
+                }
+            },
+        ]
+
+        self.service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": requests}
+        ).execute()
+
+    def add_or_update_sender(
+        self,
+        spreadsheet_id: str,
+        sender_email: str,
+        sender_stats: dict[str, Any],
+    ) -> None:
+        """
+        Add or update a sender in the 발신자 관리 tab.
+
+        Args:
+            spreadsheet_id: Spreadsheet ID
+            sender_email: Sender email address
+            sender_stats: Stats dict with keys:
+                - name: Sender name (optional)
+                - total_sent: Sent count
+                - total_received: Received count
+                - p45_count: Count of P4-5 emails
+                - total_emails: Total emails from sender
+                - recent_7days: Recent activity count
+                - last_contact_date: Last contact date string
+        """
+        # Calculate auto score
+        auto_score = self._calculate_sender_auto_score(sender_stats)
+
+        # Check if sender already exists
+        result = self.service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="발신자 관리!A2:L",
+        ).execute()
+
+        rows = result.get("values", [])
+        sender_row = None
+        row_index = None
+
+        for i, row in enumerate(rows, start=2):
+            if row and row[0] == sender_email:
+                sender_row = row
+                row_index = i
+                break
+
+        # Prepare row data
+        name = sender_stats.get("name", "")
+        manual_grade = sender_row[3] if (sender_row and len(sender_row) > 3) else ""
+        final_score = self._get_final_score(auto_score, manual_grade)
+
+        p45_ratio = (
+            round(sender_stats["p45_count"] / sender_stats["total_emails"] * 100, 1)
+            if sender_stats.get("total_emails", 0) > 0 else 0
+        )
+
+        memo = sender_row[11] if (sender_row and len(sender_row) > 11) else ""
+
+        new_row = [
+            sender_email,                             # A
+            name,                                      # B
+            auto_score,                                # C
+            manual_grade,                              # D
+            final_score,                               # E
+            sender_stats.get("total_sent", 0) + sender_stats.get("total_received", 0),  # F
+            sender_stats.get("total_sent", 0),         # G
+            sender_stats.get("total_received", 0),     # H
+            f"{p45_ratio}%",                           # I
+            sender_stats.get("recent_7days", 0),       # J
+            sender_stats.get("last_contact_date", ""), # K
+            memo,                                      # L
+        ]
+
+        if row_index:
+            # Update existing row
+            self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"발신자 관리!A{row_index}:L{row_index}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [new_row]},
+            ).execute()
+        else:
+            # Append new row
+            self.service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range="발신자 관리!A:L",
+                valueInputOption="USER_ENTERED",
+                body={"values": [new_row]},
+            ).execute()
+
+    def _calculate_sender_auto_score(self, stats: dict[str, Any]) -> int:
+        """
+        Calculate automatic sender importance score (0-100).
+
+        Algorithm:
+        - High priority ratio (40%): % of P4-5 emails
+        - Interaction frequency (30%): weighted_exchanges = (sent × 2) + received
+        - Sent weight (20%): ratio of sent vs received
+        - Recency (10%): last 7 days activity
+
+        Args:
+            stats: Sender statistics
+
+        Returns:
+            Score from 0-100
+        """
+        score = 0.0
+
+        # 1. High priority ratio (40 points max)
+        total_emails = stats.get("total_emails", 0)
+        p45_count = stats.get("p45_count", 0)
+        if total_emails > 0:
+            p45_ratio = p45_count / total_emails
+            score += p45_ratio * 40
+
+        # 2. Interaction frequency (30 points max)
+        sent = stats.get("total_sent", 0)
+        received = stats.get("total_received", 0)
+        weighted_exchanges = (sent * 2) + received
+
+        if weighted_exchanges >= 100:
+            score += 30
+        elif weighted_exchanges >= 50:
+            score += 25
+        elif weighted_exchanges >= 20:
+            score += 20
+        elif weighted_exchanges >= 10:
+            score += 15
+        elif weighted_exchanges >= 5:
+            score += 10
+        else:
+            score += 5
+
+        # 3. Sent weight (20 points max)
+        total_exchanges = sent + received
+        if total_exchanges > 0:
+            sent_ratio = sent / total_exchanges
+            score += sent_ratio * 20
+
+        # 4. Recency (10 points max)
+        recent_7days = stats.get("recent_7days", 0)
+        if recent_7days >= 10:
+            score += 10
+        elif recent_7days >= 5:
+            score += 8
+        elif recent_7days >= 3:
+            score += 6
+        elif recent_7days >= 1:
+            score += 3
+
+        return min(100, int(round(score)))
+
+    def _get_final_score(self, auto_score: int, manual_grade: str) -> int:
+        """
+        Get final sender importance score.
+
+        If manual_grade is set, use it. Otherwise use auto_score.
+
+        Args:
+            auto_score: Automatic score (0-100)
+            manual_grade: Manual grade (VIP/중요/보통/낮음/차단)
+
+        Returns:
+            Final score (0-100)
+        """
+        grade_scores = {
+            "VIP": 100,
+            "중요": 80,
+            "보통": 50,
+            "낮음": 20,
+            "차단": 0,
+        }
+
+        if manual_grade in grade_scores:
+            return grade_scores[manual_grade]
+        else:
+            return auto_score
+
+    def get_sender_importance_scores(self, spreadsheet_id: str) -> dict[str, int]:
+        """
+        Get sender importance scores from 발신자 관리 tab.
+
+        Returns:
+            Dict mapping sender email to final score (0-100)
+
+        Example:
+            {
+                'ceo@company.com': 100,
+                'teammate@company.com': 65,
+                'spam@example.com': 0,
+            }
+        """
+        result = self.service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="발신자 관리!A2:E",
+        ).execute()
+
+        rows = result.get("values", [])
+        scores = {}
+
+        for row in rows:
+            if len(row) >= 5:
+                sender_email = row[0]
+                final_score = row[4]
+
+                # Convert to int
+                try:
+                    scores[sender_email] = int(final_score)
+                except (ValueError, TypeError):
+                    scores[sender_email] = 0
+
+        return scores
