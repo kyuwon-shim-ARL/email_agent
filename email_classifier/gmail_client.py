@@ -11,6 +11,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",  # 초안 작성 권한
     "https://www.googleapis.com/auth/gmail.send",  # 메일 발송 권한
+    "https://www.googleapis.com/auth/gmail.modify",  # 라벨 관리 권한
+    "https://www.googleapis.com/auth/spreadsheets",  # Sheets 읽기/쓰기
 ]
 
 
@@ -49,28 +51,54 @@ class GmailClient:
 
         return creds
 
-    def get_recent_emails(self, max_results: int = 10) -> list[dict[str, Any]]:
+    def get_recent_emails(self, max_results: int = 10, skip_processed: bool = True) -> list[dict[str, Any]]:
         """
         Get recent emails from inbox.
 
         Args:
             max_results: Maximum number of emails to fetch
+            skip_processed: If True, skip emails with "처리완료" label (default: True)
 
         Returns:
-            List of email dictionaries with id, subject, sender, snippet
+            List of email dictionaries with id, subject, sender, snippet, recipient_type
         """
-        # Get message list
+        # Get processed message IDs if filtering
+        processed_ids = set()
+        if skip_processed:
+            # Get "처리완료" label ID
+            label_ids = self.setup_email_labels()
+            processed_label_id = label_ids.get("처리완료")
+            if processed_label_id:
+                processed_results = (
+                    self.service.users()
+                    .messages()
+                    .list(userId="me", labelIds=[processed_label_id], maxResults=500)
+                    .execute()
+                )
+                processed_ids = set(m['id'] for m in processed_results.get('messages', []))
+
+        # Get message list (fetch more to account for filtering)
+        fetch_count = max_results * 3 if skip_processed else max_results
         results = (
             self.service.users()
             .messages()
-            .list(userId="me", labelIds=["INBOX"], maxResults=max_results)
+            .list(userId="me", labelIds=["INBOX"], maxResults=fetch_count)
             .execute()
         )
 
         messages = results.get("messages", [])
+
+        # Filter out processed messages
+        if skip_processed:
+            messages = [m for m in messages if m['id'] not in processed_ids]
+
+        # Get my email address once for recipient type detection
+        profile = self.service.users().getProfile(userId='me').execute()
+        my_email = profile['emailAddress'].lower()
+
         emails = []
 
-        for msg in messages:
+        for msg in messages[:max_results]:  # Limit to max_results
             # Get full message details
             message = (
                 self.service.users().messages().get(userId="me", id=msg["id"]).execute()
@@ -80,6 +108,13 @@ class GmailClient:
             headers = message["payload"]["headers"]
             subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
             sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
+            date_str = next((h["value"] for h in headers if h["name"] == "Date"), "")
+            to_header = next((h["value"] for h in headers if h["name"] == "To"), "")
+            cc = next((h["value"] for h in headers if h["name"] == "Cc"), "")
+            label_ids = message.get("labelIds", [])
+
+            # Convert label IDs to names
+            label_names = self.get_label_names(label_ids)
 
             # Extract thread ID and full body
             thread_id = message["threadId"]
@@ -87,35 +122,189 @@ class GmailClient:
             # Get email body (prefer text/plain)
             body = self._get_message_body(message["payload"])
 
+            # Determine recipient type (To/CC/Group)
+            recipient_info = self.get_recipient_type(headers, my_email)
+
             emails.append(
                 {
                     "id": message["id"],
                     "thread_id": thread_id,
                     "subject": subject,
                     "sender": sender,
+                    "date": date_str,
+                    "to": to_header,
+                    "cc": cc,
+                    "labels": label_names,
                     "snippet": message["snippet"],
                     "body": body,
+                    "recipient_type": recipient_info["recipient_type"],
+                    "priority_modifier": recipient_info["priority_modifier"],
                 }
             )
 
         return emails
 
     def _get_message_body(self, payload: dict) -> str:
-        """Extract email body from message payload."""
-        body = ""
+        """Extract email body from message payload (recursive for nested parts)."""
+        import base64
 
+        # Direct body data
+        if "body" in payload and "data" in payload["body"]:
+            try:
+                return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        # Handle multipart messages
         if "parts" in payload:
+            # First try to find text/plain
             for part in payload["parts"]:
-                if part["mimeType"] == "text/plain":
-                    if "data" in part["body"]:
-                        import base64
-                        body = base64.urlsafe_b64decode(part["body"]["data"]).decode()
-                        break
-        elif "body" in payload and "data" in payload["body"]:
-            import base64
-            body = base64.urlsafe_b64decode(payload["body"]["data"]).decode()
+                if part.get("mimeType") == "text/plain":
+                    if "body" in part and "data" in part["body"]:
+                        try:
+                            return base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+                # Recursively check nested parts
+                if "parts" in part:
+                    nested_body = self._get_message_body(part)
+                    if nested_body:
+                        return nested_body
 
-        return body or ""
+            # If no text/plain, try text/html
+            for part in payload["parts"]:
+                if part.get("mimeType") == "text/html":
+                    if "body" in part and "data" in part["body"]:
+                        try:
+                            html = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
+                            # Strip HTML tags for preview
+                            import re
+                            text = re.sub(r'<[^>]+>', ' ', html)
+                            text = re.sub(r'\s+', ' ', text).strip()
+                            return text
+                        except Exception:
+                            pass
+                # Recursively check nested parts for HTML
+                if "parts" in part:
+                    nested_body = self._get_message_body(part)
+                    if nested_body:
+                        return nested_body
+
+        return ""
+
+    def get_recipient_type(self, headers: list[dict], my_email: str | None = None) -> dict[str, Any]:
+        """
+        Determine how the user received the email (To, CC, or Group).
+
+        This affects priority scoring:
+        - "direct": User is a direct recipient (To field) → Higher priority
+        - "cc": User is CC'd → Lower priority (참조용)
+        - "group": Sent to a group/mailing list → Similar to CC
+
+        Args:
+            headers: Email headers list from Gmail API
+            my_email: User's email address (if None, will fetch from profile)
+
+        Returns:
+            Dict with:
+            - recipient_type: "direct" | "cc" | "group"
+            - priority_modifier: int (-1 for cc/group, 0 for direct)
+            - description: Korean description for logging
+        """
+        import re
+
+        # Get my email if not provided
+        if my_email is None:
+            profile = self.service.users().getProfile(userId='me').execute()
+            my_email = profile['emailAddress'].lower()
+        else:
+            my_email = my_email.lower()
+
+        # Extract To, CC headers
+        to_header = next((h["value"] for h in headers if h["name"].lower() == "to"), "")
+        cc_header = next((h["value"] for h in headers if h["name"].lower() == "cc"), "")
+
+        # Check if my email is in To field
+        to_emails = [e.lower() for e in re.findall(r'[\w\.-]+@[\w\.-]+', to_header)]
+        cc_emails = [e.lower() for e in re.findall(r'[\w\.-]+@[\w\.-]+', cc_header)]
+
+        # Detect group mail patterns
+        group_patterns = [
+            r'all[-_]?', r'team[-_]?', r'group[-_]?', r'dept[-_]?',
+            r'everyone', r'announce', r'news', r'info@', r'admin@',
+            r'전체', r'그룹', r'팀', r'공지', r'noreply', r'no-reply',
+            r'@googlegroups\.com', r'@lists\.', r'-all@', r'-team@',
+        ]
+
+        # Check if this is a group email
+        is_group_mail = False
+        for pattern in group_patterns:
+            if re.search(pattern, to_header.lower()):
+                is_group_mail = True
+                break
+
+        # Determine recipient type
+        if my_email in cc_emails:
+            return {
+                "recipient_type": "cc",
+                "priority_modifier": -1,
+                "description": "참조(CC) 수신 → 우선순위 -1",
+            }
+        elif is_group_mail:
+            return {
+                "recipient_type": "group",
+                "priority_modifier": -1,
+                "description": "그룹메일 수신 → 우선순위 -1",
+            }
+        elif my_email in to_emails:
+            return {
+                "recipient_type": "direct",
+                "priority_modifier": 0,
+                "description": "직접 수신 → 우선순위 유지",
+            }
+        else:
+            # Might be BCC or forwarded - treat as direct
+            return {
+                "recipient_type": "direct",
+                "priority_modifier": 0,
+                "description": "직접 수신 → 우선순위 유지",
+            }
+
+    def check_if_replied(self, thread_id: str) -> bool:
+        """
+        Check if user has replied to a thread.
+
+        Args:
+            thread_id: Gmail thread ID to check
+
+        Returns:
+            True if user has sent a reply in this thread, False otherwise
+        """
+        try:
+            # Get my email address
+            profile = self.service.users().getProfile(userId='me').execute()
+            my_email = profile['emailAddress'].lower()
+
+            # Get thread with all messages
+            thread = self.service.users().threads().get(
+                userId='me', id=thread_id, format='metadata',
+                metadataHeaders=['From']
+            ).execute()
+
+            messages = thread.get('messages', [])
+
+            # Skip the first message (original email) and check if I sent any reply
+            for msg in messages[1:]:  # Skip first message
+                headers = msg.get('payload', {}).get('headers', [])
+                from_header = next(
+                    (h['value'] for h in headers if h['name'].lower() == 'from'), ''
+                )
+                if my_email in from_header.lower():
+                    return True  # I replied
+
+            return False  # No reply from me
+        except Exception:
+            return False  # On error, assume not replied
 
     def create_draft(
         self, thread_id: str, to: str, subject: str, body: str, is_html: bool = True
@@ -582,6 +771,29 @@ class GmailClient:
 
         return result
 
+    def get_label_names(self, label_ids: list[str]) -> list[str]:
+        """
+        Convert label IDs to label names.
+
+        Args:
+            label_ids: List of label IDs (e.g., ['Label_2', 'INBOX'])
+
+        Returns:
+            List of label names (e.g., ['답장필요', 'P3-보통'])
+        """
+        # Cache label mapping
+        if not hasattr(self, '_label_cache'):
+            results = self.service.users().labels().list(userId="me").execute()
+            self._label_cache = {
+                label["id"]: label["name"]
+                for label in results.get("labels", [])
+            }
+
+        return [
+            self._label_cache.get(lid, lid)
+            for lid in label_ids
+        ]
+
     def create_or_get_label(self, label_name: str, color: dict[str, str] | None = None) -> str:
         """
         Create a Gmail label or get existing one.
@@ -631,9 +843,11 @@ class GmailClient:
         """
         Set up all email classification labels with colors.
 
-        Creates 8 labels:
+        Creates 10 labels:
         - 3 status labels: 답장필요, 답장불필요, 답장완료
         - 5 priority labels: P1-최저, P2-낮음, P3-보통, P4-긴급, P5-최우선
+        - 1 processing label: 처리완료 (to prevent reprocessing)
+        - 1 summary label: 메일요약 (for summary reports)
 
         Returns:
             Dict mapping label name to label ID
@@ -642,18 +856,26 @@ class GmailClient:
             label_ids = gmail.setup_email_labels()
             # {'답장필요': 'Label_123', 'P5-최우선': 'Label_456', ...}
         """
+        # Gmail allowed label colors (from Google's palette)
+        # See: https://developers.google.com/gmail/api/reference/rest/v1/users.labels
         labels_config = {
             # Status labels
             "답장필요": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},      # Red
-            "답장불필요": {"backgroundColor": "#cccccc", "textColor": "#000000"},    # Gray
-            "답장완료": {"backgroundColor": "#16a766", "textColor": "#ffffff"},      # Green
+            "답장불필요": {"backgroundColor": "#e3d7ff", "textColor": "#000000"},    # Light purple (gray alt)
+            "답장완료": {"backgroundColor": "#16a765", "textColor": "#ffffff"},      # Green
 
-            # Priority labels
-            "P1-최저": {"backgroundColor": "#efefef", "textColor": "#000000"},       # Light gray
+            # Priority labels (using Gmail's allowed colors)
+            "P1-최저": {"backgroundColor": "#e3d7ff", "textColor": "#000000"},       # Light purple
             "P2-낮음": {"backgroundColor": "#a4c2f4", "textColor": "#000000"},       # Light blue
-            "P3-보통": {"backgroundColor": "#fad165", "textColor": "#000000"},       # Yellow
-            "P4-긴급": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},       # Orange-red
-            "P5-최우선": {"backgroundColor": "#cc0000", "textColor": "#ffffff"},     # Dark red
+            "P3-보통": {"backgroundColor": "#fce8b3", "textColor": "#000000"},       # Light yellow
+            "P4-긴급": {"backgroundColor": "#ffad47", "textColor": "#000000"},       # Orange
+            "P5-최우선": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},     # Red
+
+            # Processing label (to prevent reprocessing)
+            "처리완료": {"backgroundColor": "#b6cff5", "textColor": "#000000"},      # Light blue
+
+            # Summary report label
+            "메일요약": {"backgroundColor": "#42d692", "textColor": "#ffffff"},      # Teal green
         }
 
         label_ids = {}
@@ -672,6 +894,8 @@ class GmailClient:
     ) -> None:
         """
         Apply status and priority labels to an email.
+
+        Removes existing classification labels first to prevent duplicates.
 
         Args:
             message_id: Gmail message ID
@@ -707,12 +931,20 @@ class GmailClient:
         if priority_label in label_ids:
             labels_to_add.append(label_ids[priority_label])
 
-        # Apply labels
+        # Remove existing classification labels (except the ones we're adding)
+        all_label_ids = list(label_ids.values())
+        labels_to_remove = [lid for lid in all_label_ids if lid not in labels_to_add]
+
+        # Apply labels (remove old, add new in one call)
         if labels_to_add:
+            modify_body = {"addLabelIds": labels_to_add}
+            if labels_to_remove:
+                modify_body["removeLabelIds"] = labels_to_remove
+
             self.service.users().messages().modify(
                 userId="me",
                 id=message_id,
-                body={"addLabelIds": labels_to_add}
+                body=modify_body
             ).execute()
 
     def remove_all_classification_labels(self, message_id: str, label_ids: dict[str, str]) -> None:
@@ -733,3 +965,93 @@ class GmailClient:
                 id=message_id,
                 body={"removeLabelIds": labels_to_remove}
             ).execute()
+
+    def send_summary_report(
+        self,
+        subject: str,
+        body: str,
+        label_ids: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        """
+        Send a summary report email to self with "메일요약" label.
+
+        Args:
+            subject: Email subject (e.g., "이메일 분석 보고서 - 2024-01-15")
+            body: Email body (HTML supported)
+            label_ids: Dict mapping label names to IDs (optional, will setup if not provided)
+
+        Returns:
+            Sent message information
+
+        Example:
+            report = gmail.send_summary_report(
+                subject="이메일 분석 보고서 - 2024-01-15",
+                body="<h2>분석 결과</h2><p>총 15개 이메일...</p>"
+            )
+        """
+        import base64
+        from email.mime.text import MIMEText
+
+        # Get my email address
+        profile = self.service.users().getProfile(userId='me').execute()
+        my_email = profile['emailAddress']
+
+        # Create HTML message
+        message = MIMEText(body, 'html', 'utf-8')
+        message["to"] = my_email
+        message["from"] = my_email
+        message["subject"] = subject
+
+        # Encode message
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+        # Send email
+        sent = (
+            self.service.users()
+            .messages()
+            .send(userId="me", body={"raw": raw})
+            .execute()
+        )
+
+        # Apply "메일요약" label
+        if label_ids is None:
+            label_ids = self.setup_email_labels()
+
+        if "메일요약" in label_ids:
+            self.service.users().messages().modify(
+                userId="me",
+                id=sent["id"],
+                body={"addLabelIds": [label_ids["메일요약"]]}
+            ).execute()
+
+        return sent
+
+    def mark_as_processed(self, message_ids: list[str], label_ids: dict[str, str] | None = None) -> None:
+        """
+        Mark emails as processed by adding "처리완료" label.
+
+        This prevents emails from being reprocessed in future runs.
+
+        Args:
+            message_ids: List of Gmail message IDs
+            label_ids: Dict mapping label names to IDs (optional)
+
+        Example:
+            gmail.mark_as_processed(['abc123', 'def456'])
+        """
+        if label_ids is None:
+            label_ids = self.setup_email_labels()
+
+        processed_label_id = label_ids.get("처리완료")
+        if not processed_label_id:
+            return
+
+        for msg_id in message_ids:
+            try:
+                self.service.users().messages().modify(
+                    userId="me",
+                    id=msg_id,
+                    body={"addLabelIds": [processed_label_id]}
+                ).execute()
+            except Exception:
+                pass  # Skip if message not found

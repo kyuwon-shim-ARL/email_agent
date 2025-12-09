@@ -1,735 +1,223 @@
-# Implementation Plan - Hybrid Gmail Draft + Sheets
+# Implementation Plan - Email Agent v0.6.2
 
 ## Overview
 
-Implement v0.4.0 hybrid architecture where Gmail stores rich-formatted drafts and Sheets manages workflow state.
+Streamlined workflow: Analyze emails, auto-create Gmail drafts, user reviews in Gmail.
 
-**Goal**: Preserve user formatting edits in Gmail while using Sheets for batch management.
+**Goal**: 초안 내용 있으면 Gmail 초안 자동 생성하여 검토 준비 완료 상태로 제공.
+
+### v0.6.2 New Features
+
+- **Gmail 초안 자동 생성**: /email-analyze 시 초안 내용 있으면 즉시 Gmail 초안 생성
+- **Draft ID 자동 저장**: 스프레드시트에 Draft ID 자동 업데이트
+- **16열 스키마**: Email Tracker 형식으로 확장 (답장여부 컬럼 추가)
+- **내용미리보기 HTML 제거**: 순수 텍스트만 표시
+
+### v0.6.1 Features (Completed)
+
+- **수신유형 기반 우선순위**: To/CC/그룹메일에 따른 우선순위 자동 조정
+
+### v0.6.0 Features (Completed)
+
+- **통합 스프레드시트**: 하나의 스프레드시트에서 신규 메일 + 처리 이력 탭 관리
+- **답장 여부 체크**: Gmail Thread API로 답장 상태 자동 확인
+- **Cron 자동화**: 매일 8시 자동 분석
 
 ---
 
-## Architecture Changes
+## Architecture (v0.6.2)
 
-### Before (v0.3.0 - Broken)
+### Workflow Diagram
+
 ```
-Program → Sheets (full text) → Batch send (recreate from text) ❌
-                                ↳ User Gmail edits LOST
+┌─────────────────────────────────────────────────────────────────┐
+│ /email-analyze (메인 명령어)                                      │
+│   1. Gmail에서 이메일 로드 (처리완료 제외)                          │
+│   2. AI 분류 (우선순위, 요약, 초안 생성)                            │
+│   3. Gmail 라벨 적용                                              │
+│   4. Sheets에 기록 (신규 메일 + 처리 이력)                          │
+│   5. ⭐ 초안 내용 있으면:                                          │
+│      - Gmail 초안 자동 생성                                       │
+│      - Draft ID를 Sheets에 저장                                   │
+│   6. 요약 보고서 발송                                              │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 사용자 검토 (Gmail + Sheets)                                      │
+│   - Gmail 임시보관함에서 초안 직접 검토/수정                         │
+│   - Sheets에서 상태/초안 내용 변경 가능                             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ /email-draft (시트 수정 후 추가 초안 필요시)                        │
+│   조건: 상태="답장필요" + 초안 내용 있음 + Draft ID 없음             │
+│   → Gmail 초안 생성 + Draft ID 업데이트                            │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ /email-send (선택)                                               │
+│   - 전송예정=TRUE인 항목 일괄 발송                                 │
+│   - 또는 Gmail에서 직접 발송                                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### After (v0.4.0 - Correct)
+---
+
+## Spreadsheet Schema (v0.6.2)
+
+### Unified Spreadsheet Structure
+
 ```
-Program → Gmail (HTML drafts) ← User edits in Gmail app
-            ↓
-          Sheets (links + IDs)
-            ↓
-        Batch send (send draft by ID) ✅
-            ↳ User Gmail edits PRESERVED
+📚 Email History (누적 이력)
+├── [신규 메일] - 오늘 분석한 이메일 (매 분석 시 초기화)
+└── [처리 이력] - 전체 누적 이력 (중복 시 업데이트)
 ```
+
+### 16 Columns (Email Tracker Format)
+
+| Col | Name | Type | Description |
+|-----|------|------|-------------|
+| A | 상태 | Text | 답장필요/답장불필요/답장완료 |
+| B | 우선순위 | Number | 1-5 with conditional color |
+| C | 라벨 | Text | Gmail labels |
+| D | 제목 | Text | Email subject |
+| E | 발신자 | Text | Sender name <email> |
+| F | 받은CC | Text | CC recipients |
+| G | 받은시간 | Text | Gmail Date header |
+| H | 내용미리보기 | Text | Body preview 300 chars (HTML stripped) |
+| I | AI요약 | Text | 3-line MECE summary |
+| J | 초안(제목) | Text | Draft reply subject |
+| K | 초안(내용) | Text | Draft reply body |
+| L | 보낼CC | Text | CC for reply (user input) |
+| M | 전송예정 | Boolean | Checkbox for batch send |
+| N | 답장여부 | Text | 답장함/미답장 |
+| O | Draft ID | Hidden | Gmail draft ID |
+| P | Thread ID | Hidden | Gmail thread ID |
+
+### Conditional Formatting
+
+| Column | Value | Color |
+|--------|-------|-------|
+| 상태 (A) | 답장필요 | 🔴 Light red |
+| 상태 (A) | 답장완료 | 🟢 Light green |
+| 우선순위 (B) | P4-5 (높음) | 🟢 Light green |
+| 우선순위 (B) | P1-2 (낮음) | 🔴 Light red |
+| 답장여부 (N) | 미답장 | 🔴 Light red |
+| 답장여부 (N) | 답장함 | 🟢 Light green |
+
+---
+
+## Slash Commands
+
+### /email-analyze
+
+1. Load emails from Gmail (15-20 recommended, skip processed)
+2. Collect conversation history for each sender
+3. Check reply status for each email (check_if_replied)
+4. AI analyzes each email:
+   - Priority (1-5)
+   - Requires response (true/false)
+   - AI summary (3 lines MECE)
+   - Action item (even without deadline)
+   - Deadline & description (if mentioned)
+   - Draft subject/body (if response needed)
+5. Apply Gmail labels
+6. Clear "신규 메일" tab, add new emails
+7. Update "처리 이력" tab (add new / update existing)
+8. **⭐ Auto-create Gmail drafts**:
+   - For each email with `requires_response=true` AND `draft_body` not empty
+   - Create Gmail draft via API
+   - Save Draft ID to Sheets (column O)
+9. Send HTML summary report
+
+### /email-draft
+
+1. Read unified spreadsheet (auto-detect from config)
+2. Find rows where:
+   - 상태="답장필요"
+   - 초안(내용) not empty
+   - Draft ID is empty
+3. For each matching row:
+   - Extract sender email, 초안(제목), 초안(내용), 보낼CC
+   - Create Gmail draft
+   - Update Draft ID in both tabs
+4. Report created drafts count
+
+### /email-send
+
+1. Read spreadsheet
+2. Find all rows where 전송예정=TRUE AND Draft ID exists
+3. Confirm with user (show list)
+4. Batch send all drafts
+5. Update 상태 to "답장완료"
 
 ---
 
 ## Component Design
 
-### 1. Gmail Client Enhancement (`gmail_client.py`)
+### Gmail Client (`gmail_client.py`)
 
-#### 1.1 HTML Draft Support
-
-**Current Code** (line 120-157):
 ```python
-def create_draft(self, thread_id: str, to: str, subject: str, body: str):
-    message = MIMEText(body)  # ❌ Plain text only
+# Key functions
+def get_recent_emails(max_results: int, skip_processed: bool = True) -> list[dict]
+def get_recipient_type(headers: list, my_email: str) -> dict
+def get_conversation_history(sender: str, max_results: int) -> dict
+def check_if_replied(thread_id: str) -> bool
+def create_draft(to: str, subject: str, body: str, thread_id: str, cc: list) -> dict
+def send_draft(draft_id: str) -> dict
+def setup_email_labels() -> dict[str, str]
+def apply_labels_to_email(email_id: str, status: str, priority: int, label_ids: dict)
+def mark_as_processed(message_ids: list[str], label_ids: dict) -> None
+def send_summary_report(subject: str, body: str, label_ids: dict) -> dict
 ```
 
-**New Implementation**:
+### Sheets Client (`sheets_client.py`)
+
 ```python
-def create_draft(
-    self,
-    thread_id: str,
-    to: str,
-    subject: str,
-    body: str,
-    is_html: bool = True  # NEW parameter
-) -> dict[str, Any]:
-    """
-    Create a draft reply in Gmail with HTML support.
-
-    Args:
-        thread_id: Thread ID to reply to
-        to: Recipient email address
-        subject: Email subject
-        body: Draft email body (HTML or plain text)
-        is_html: If True, body is treated as HTML
-
-    Returns:
-        Draft object with 'id' and 'message' fields
-    """
-    import base64
-    from email.mime.text import MIMEText
-
-    # Create message with appropriate content type
-    message = MIMEText(body, 'html' if is_html else 'plain', 'utf-8')
-    message["to"] = to
-    message["subject"] = subject
-
-    # Encode message
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-    # Create draft
-    draft = (
-        self.service.users()
-        .drafts()
-        .create(
-            userId="me",
-            body={"message": {"raw": raw, "threadId": thread_id}},
-        )
-        .execute()
-    )
-
-    return draft  # Returns: {'id': 'r123...', 'message': {...}}
-```
-
-**Return Value Example**:
-```json
-{
-  "id": "r1234567890abcdef",
-  "message": {
-    "id": "18c5f...",
-    "threadId": "18c5e...",
-    "labelIds": ["DRAFT"]
-  }
-}
+# Key functions
+def strip_html(text: str) -> str  # NEW: Remove HTML tags from body preview
+def get_or_create_history_sheet() -> str
+def ensure_new_emails_tab_exists(spreadsheet_id: str) -> int
+def clear_new_emails_tab(spreadsheet_id: str) -> None
+def add_email_to_both_tabs(email_data, classification, replied) -> str
+def add_to_history(email_data, classification, replied) -> str
+def add_to_new_emails(email_data, classification, replied) -> None
+def get_tab_ids(spreadsheet_id: str) -> dict[str, int]
+def get_history_spreadsheet_url() -> str
+def update_draft_id(spreadsheet_id: str, row: int, draft_id: str) -> None  # NEW
 ```
 
 ---
 
-#### 1.2 Send Existing Draft
+## Automation
 
-**New Function** (insert after `create_draft()`):
-```python
-def send_draft(self, draft_id: str) -> dict[str, Any]:
-    """
-    Send an existing Gmail draft by ID.
+### Cron Setup (Daily 8AM)
 
-    This preserves all user edits made in the Gmail app.
+```bash
+# crontab -e
+0 8 * * * /home/kyuwon/projects/email_agent/scripts/daily_email_analyze.sh
+```
 
-    Args:
-        draft_id: Draft ID from create_draft() or Sheets
+### Script (scripts/daily_email_analyze.sh)
 
-    Returns:
-        Sent message information
-
-    Raises:
-        HttpError: If draft not found or send fails
-    """
-    sent = (
-        self.service.users()
-        .drafts()
-        .send(userId="me", body={"id": draft_id})
-        .execute()
-    )
-
-    return sent  # Returns: {'id': '18c5f...', 'threadId': '18c5e...', 'labelIds': ['SENT']}
+```bash
+#!/bin/bash
+cd /home/kyuwon/projects/email_agent
+LOG_FILE="logs/daily_analyze_$(date +%Y%m%d).log"
+echo "=== Started: $(date) ===" >> "$LOG_FILE"
+claude -p "이메일 분석해줘" --dangerously-skip-permissions >> "$LOG_FILE" 2>&1
+echo "=== Completed: $(date) ===" >> "$LOG_FILE"
 ```
 
 ---
 
-#### 1.3 Batch Send Drafts (Replace Old Logic)
-
-**Current Code** (line 202-238):
-```python
-def batch_send_emails(self, emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for email in emails:
-        sent = self.send_email(  # ❌ Recreates email from text
-            to=email.get("to", ""),
-            subject=email.get("subject", ""),
-            body=email.get("body", ""),
-            # ...
-        )
-```
-
-**New Implementation**:
-```python
-def batch_send_drafts(self, draft_ids: list[str]) -> list[dict[str, Any]]:
-    """
-    Send multiple Gmail drafts by ID.
-
-    Preserves all user edits made in Gmail app.
-
-    Args:
-        draft_ids: List of draft IDs to send
-
-    Returns:
-        List of results with success/failure status
-
-    Example:
-        results = gmail.batch_send_drafts(['r123...', 'r456...'])
-        for result in results:
-            if result['success']:
-                print(f"Sent: {result['message_id']}")
-            else:
-                print(f"Failed: {result['error']}")
-    """
-    results = []
-
-    for draft_id in draft_ids:
-        try:
-            sent = self.send_draft(draft_id)
-
-            results.append({
-                "draft_id": draft_id,
-                "success": True,
-                "message_id": sent.get("id"),
-                "thread_id": sent.get("threadId"),
-                "error": None,
-            })
-        except Exception as e:
-            results.append({
-                "draft_id": draft_id,
-                "success": False,
-                "message_id": None,
-                "thread_id": None,
-                "error": str(e),
-            })
-
-    return results
-```
-
-**Keep Old Function** (for backward compatibility):
-```python
-def batch_send_emails(self, emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    DEPRECATED: Use batch_send_drafts() instead.
-
-    This recreates emails from text and loses Gmail edits.
-    """
-    # ... existing code ...
-```
-
----
-
-### 2. Sheets Client Enhancement (`sheets_client.py`)
-
-#### 2.1 Updated Spreadsheet Schema
-
-**Current Columns** (line 85-99):
-```python
-headers = [
-    "상태", "우선순위", "제목", "발신자",
-    "수신(To)", "수신(CC)", "받은시간",
-    "메일내용",      # ❌ Remove - clutters sheet
-    "답장초안",      # ❌ Remove - loses formatting
-    "답장수신자",    # ❌ Remove - redundant
-    "답장CC",        # ❌ Remove - rarely used
-    "발송여부", "Thread ID"
-]
-```
-
-**New Schema**:
-```python
-headers = [
-    "상태",              # A: 답장필요/불필요/완료
-    "우선순위",          # B: 1-5
-    "제목",              # C: Email subject
-    "발신자",            # D: Sender
-    "받은시간",          # E: Received date
-    "내용미리보기",      # F: Body preview (200 chars)
-    "Gmail 초안",        # G: Hyperlink to draft
-    "발송여부",          # H: Checkbox
-    "Draft ID",          # I: Hidden (for API)
-    "Thread ID",         # J: Hidden (for threading)
-]
-```
-
-**Column Formatting**:
-```python
-# In create_email_tracker()
-requests = [
-    # ... existing header formatting ...
-
-    # Hide columns I and J (Draft ID, Thread ID)
-    {
-        "updateDimensionProperties": {
-            "range": {
-                "sheetId": 0,
-                "dimension": "COLUMNS",
-                "startIndex": 8,  # Column I
-                "endIndex": 10,   # Column J
-            },
-            "properties": {"hiddenByUser": True},
-            "fields": "hiddenByUser",
-        }
-    },
-
-    # Set column widths
-    {
-        "updateDimensionProperties": {
-            "range": {
-                "sheetId": 0,
-                "dimension": "COLUMNS",
-                "startIndex": 6,  # Gmail 초안
-                "endIndex": 7,
-            },
-            "properties": {"pixelSize": 120},
-            "fields": "pixelSize",
-        }
-    },
-]
-```
-
----
-
-#### 2.2 Add Email Row with Draft Link
-
-**Current Code** (line 137-179):
-```python
-def add_email_row(self, spreadsheet_id: str, email_data: dict[str, Any]) -> None:
-    row = [
-        status,
-        email_data.get("priority", 3),
-        email_data.get("subject", ""),
-        email_data.get("sender", ""),
-        email_data.get("to", ""),
-        email_data.get("cc", ""),
-        email_data.get("date", ""),
-        email_data.get("body", "")[:500],  # Full body ❌
-        email_data.get("draft_body", ""),  # Draft text ❌
-        # ...
-    ]
-```
-
-**New Implementation**:
-```python
-def add_email_row(
-    self,
-    spreadsheet_id: str,
-    email_data: dict[str, Any],
-    draft_id: str = "",      # NEW
-    draft_link: str = "",    # NEW
-) -> None:
-    """
-    Add email to spreadsheet with draft link.
-
-    Args:
-        spreadsheet_id: Target spreadsheet ID
-        email_data: Email metadata
-        draft_id: Gmail draft ID (e.g., 'r1234...')
-        draft_link: Full Gmail draft URL
-    """
-    status_map = {
-        "needs_response": "답장필요",
-        "no_response": "답장불필요",
-        "sent": "답장완료",
-    }
-
-    status = status_map.get(email_data.get("status", "needs_response"), "답장필요")
-
-    row = [
-        status,                                          # A
-        email_data.get("priority", 3),                   # B
-        email_data.get("subject", ""),                   # C
-        email_data.get("sender", ""),                    # D
-        email_data.get("date", ""),                      # E
-        email_data.get("body", "")[:200],                # F: Preview only
-        draft_link,                                      # G: Clickable link
-        False,                                           # H: Checkbox unchecked
-        draft_id,                                        # I: Hidden
-        email_data.get("thread_id", ""),                 # J: Hidden
-    ]
-
-    # Append row
-    self.service.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range="Emails!A:J",  # Updated range
-        valueInputOption="USER_ENTERED",  # Changed from RAW to support formulas
-        body={"values": [row]},
-    ).execute()
-```
-
-**Draft Link Format**:
-```python
-# In main_sheets.py, generate link:
-draft_id = draft['id']
-draft_link = f'=HYPERLINK("https://mail.google.com/mail/#drafts?compose={draft_id}", "열기")'
-```
-
----
-
-#### 2.3 Get Drafts to Send
-
-**New Function**:
-```python
-def get_drafts_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
-    """
-    Get draft IDs for emails marked for sending.
-
-    Returns:
-        List of dicts with draft_id, subject, sender, row_number
-
-    Example:
-        [
-            {
-                'draft_id': 'r1234...',
-                'subject': 'Re: Meeting',
-                'sender': 'boss@example.com',
-                'row_number': 2
-            }
-        ]
-    """
-    result = self.service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range="Emails!A2:J",  # Skip header
-    ).execute()
-
-    rows = result.get("values", [])
-    drafts_to_send = []
-
-    for i, row in enumerate(rows, start=2):  # Row 2 = first data row
-        if len(row) < 9:
-            continue
-
-        send_checkbox = row[7] if len(row) > 7 else ""  # Column H
-        draft_id = row[8] if len(row) > 8 else ""       # Column I
-
-        # Check if marked for sending
-        if send_checkbox in ["TRUE", "True", True] and draft_id:
-            drafts_to_send.append({
-                "draft_id": draft_id,
-                "subject": row[2] if len(row) > 2 else "",
-                "sender": row[3] if len(row) > 3 else "",
-                "row_number": i,
-            })
-
-    return drafts_to_send
-```
-
----
-
-#### 2.4 Update Row Status
-
-**Modified Function**:
-```python
-def update_email_status(
-    self,
-    spreadsheet_id: str,
-    row_number: int,
-    new_status: str,
-    uncheck_send_box: bool = True  # NEW parameter
-) -> None:
-    """
-    Update email status after sending.
-
-    Args:
-        row_number: Row number (2 = first data row)
-        new_status: New status (e.g., '답장완료')
-        uncheck_send_box: If True, uncheck '발송여부'
-    """
-    # Update status (column A)
-    self.service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=f"Emails!A{row_number}",
-        valueInputOption="RAW",
-        body={"values": [[new_status]]},
-    ).execute()
-
-    # Uncheck send box (column H)
-    if uncheck_send_box:
-        self.service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"Emails!H{row_number}",
-            valueInputOption="RAW",
-            body={"values": [[False]]},
-        ).execute()
-```
-
----
-
-### 3. Main Workflow Changes (`main_sheets.py`)
-
-#### 3.1 Draft Creation Step (Line ~212-227)
-
-**Current Code**:
-```python
-# Create Gmail draft
-try:
-    gmail.create_draft(
-        thread_id=email["thread_id"],
-        to=email["sender"],
-        subject=draft["subject"],
-        body=draft["body"],  # Plain text
-    )
-```
-
-**New Code**:
-```python
-# Create Gmail draft with HTML
-try:
-    draft_obj = gmail.create_draft(
-        thread_id=email["thread_id"],
-        to=email["sender"],
-        subject=draft["subject"],
-        body=draft["body"],
-        is_html=True,  # NEW: Enable HTML formatting
-    )
-
-    # Extract draft ID
-    draft_id = draft_obj.get("id", "")
-
-    # Generate draft link
-    draft_link = f'=HYPERLINK("https://mail.google.com/mail/#drafts?compose={draft_id}", "열기")'
-
-    print(f"   ✅ Draft: {email['subject'][:50]}... (ID: {draft_id[:8]}...)")
-
-except Exception as e:
-    print(f"   ⚠️  Failed: {e}")
-    draft_id = ""
-    draft_link = ""
-```
-
----
-
-#### 3.2 Sheets Update Step (Line ~140-161)
-
-**Current Code**:
-```python
-for email in emails:
-    classification = email.get('classification', {})
-
-    email_data = {
-        "status": status,
-        "priority": classification.get('priority', 3),
-        "subject": email.get('subject', ''),
-        "sender": email.get('sender', ''),
-        "to": "me",
-        "cc": "",
-        "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-        "body": email.get('body', email.get('snippet', '')),
-        "draft_body": "",  # Not yet generated
-        # ...
-    }
-
-    sheets.add_email_row(spreadsheet_id, email_data)
-```
-
-**New Code**:
-```python
-# After draft generation, update Sheets with draft info
-for email, draft, draft_obj in zip(emails_needing_response, drafts, draft_objects):
-    classification = email.get('classification', {})
-    draft_id = draft_obj.get("id", "")
-    draft_link = f'=HYPERLINK("https://mail.google.com/mail/#drafts?compose={draft_id}", "열기")'
-
-    email_data = {
-        "status": "needs_response",
-        "priority": classification.get('priority', 3),
-        "subject": email.get('subject', ''),
-        "sender": email.get('sender', ''),
-        "date": datetime.now().strftime('%Y-%m-%d %H:%M'),
-        "body": email.get('body', email.get('snippet', '')),  # Preview
-        "thread_id": email.get('thread_id', ''),
-    }
-
-    sheets.add_email_row(
-        spreadsheet_id,
-        email_data,
-        draft_id=draft_id,       # NEW
-        draft_link=draft_link,   # NEW
-    )
-```
-
----
-
-#### 3.3 Batch Send Step (Line ~233-276)
-
-**Current Code**:
-```python
-if send_choice == 'y':
-    emails_to_send = sheets.get_emails_to_send(spreadsheet_id)
-
-    send_data = [
-        {
-            "to": email['draft_to'] or email['sender'],
-            "subject": email['subject'],
-            "body": email['draft_body'],  # ❌ Text from Sheets
-            "cc": email.get('draft_cc'),
-            "thread_id": email.get('thread_id'),
-        }
-        for email in emails_to_send
-    ]
-
-    results = gmail.batch_send_emails(send_data)  # ❌ Recreates emails
-```
-
-**New Code**:
-```python
-if send_choice == 'y':
-    print("\n🔍 Checking spreadsheet for drafts to send...")
-    drafts_to_send = sheets.get_drafts_to_send(spreadsheet_id)
-
-    if not drafts_to_send:
-        print("   No drafts marked for sending")
-    else:
-        print(f"   Found {len(drafts_to_send)} drafts marked for sending")
-
-        # Show what will be sent
-        for draft in drafts_to_send:
-            print(f"   - {draft['subject'][:50]} (to: {draft['sender']})")
-
-        confirm = input(f"\n⚠️  Send {len(drafts_to_send)} drafts? (yes/no): ").strip().lower()
-
-        if confirm == 'yes':
-            print("\n📤 Sending drafts...")
-
-            draft_ids = [d['draft_id'] for d in drafts_to_send]
-            results = gmail.batch_send_drafts(draft_ids)  # ✅ Sends existing drafts
-
-            # Update spreadsheet status
-            for result, draft_info in zip(results, drafts_to_send):
-                if result['success']:
-                    sheets.update_email_status(
-                        spreadsheet_id,
-                        draft_info['row_number'],
-                        "답장완료",
-                        uncheck_send_box=True,
-                    )
-                    print(f"   ✅ Sent: {draft_info['subject'][:50]}...")
-                else:
-                    print(f"   ❌ Failed: {draft_info['subject'][:50]}... - {result['error']}")
-
-            success_count = sum(1 for r in results if r['success'])
-            print(f"\n📧 Sent {success_count}/{len(results)} drafts")
-```
-
----
-
-## Data Flow Diagram
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 1-4: Email Classification (unchanged)                      │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 5: Draft Generation (MODIFIED)                             │
-│                                                                  │
-│  Claude generates HTML reply                                    │
-│       ↓                                                          │
-│  gmail.create_draft(body=html, is_html=True)                    │
-│       ↓                                                          │
-│  Returns: draft_obj = {'id': 'r1234...', 'message': {...}}      │
-│       ↓                                                          │
-│  Extract draft_id = 'r1234...'                                  │
-│       ↓                                                          │
-│  Generate link = '=HYPERLINK("https://mail.google.com/...", ..)' │
-│       ↓                                                          │
-│  sheets.add_email_row(draft_id=..., draft_link=...)             │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ USER ACTIONS (outside program)                                   │
-│                                                                  │
-│  1. Opens Google Sheets                                         │
-│  2. Clicks "Gmail 초안" link → Opens draft in Gmail             │
-│  3. Edits formatting (bold, colors, signature)                  │
-│  4. Gmail auto-saves edits                                      │
-│  5. Returns to Sheets, checks "발송여부"                         │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 6: Batch Send (MODIFIED)                                   │
-│                                                                  │
-│  sheets.get_drafts_to_send(spreadsheet_id)                      │
-│       ↓                                                          │
-│  Returns: [{'draft_id': 'r1234...', row_number: 2}, ...]        │
-│       ↓                                                          │
-│  gmail.batch_send_drafts(draft_ids=['r1234...', ...])           │
-│       ↓                                                          │
-│  For each draft_id:                                             │
-│    - gmail.send_draft(draft_id)  ← Sends existing Gmail draft  │
-│    - sheets.update_email_status(row, "답장완료")                │
-│       ↓                                                          │
-│  ✅ User edits preserved in sent emails!                        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Testing Plan
-
-### Unit Tests
-
-1. **Gmail Client**
-   - `test_create_html_draft()` - Verify HTML MIME type
-   - `test_send_draft_by_id()` - Verify draft sent, not recreated
-   - `test_batch_send_preserves_edits()` - Mock user edits
-
-2. **Sheets Client**
-   - `test_add_row_with_draft_link()` - Verify HYPERLINK formula
-   - `test_get_drafts_to_send()` - Verify checkbox filtering
-   - `test_hidden_columns()` - Verify Draft ID column hidden
-
-### Integration Tests
-
-1. **End-to-End Workflow**
-   ```python
-   # Create draft
-   draft = gmail.create_draft(..., is_html=True)
-   draft_id = draft['id']
-
-   # Add to Sheets
-   sheets.add_email_row(..., draft_id=draft_id)
-
-   # Simulate user edit in Gmail (manual step)
-   input("Edit the draft in Gmail, then press Enter")
-
-   # Send draft
-   result = gmail.send_draft(draft_id)
-
-   # Verify sent email contains edits (manual verification)
-   ```
-
-2. **Error Cases**
-   - Draft deleted before send → Graceful error
-   - Network timeout → Retry logic
-   - Invalid HTML → Fallback to plain text
-
----
-
-## Rollout Plan
-
-### Phase 1: Code Changes (This PR)
-- ✅ Update gmail_client.py (HTML + send_draft)
-- ✅ Update sheets_client.py (new schema + draft links)
-- ✅ Update main_sheets.py (connect components)
-- ✅ Update README.md (new workflow docs)
-
-### Phase 2: Testing
-- Test HTML draft creation
-- Test user edit preservation
-- Test batch send with draft IDs
-
-### Phase 3: Documentation
-- Update INSTALLATION.md (no changes needed)
-- Update GETTING_STARTED.md (new workflow screenshots)
-- Create migration guide for v0.3.0 users
-
-### Phase 4: Release
-- Tag v0.4.0
-- GitHub release notes
-- Deprecation notice for old batch_send_emails()
-
----
-
-## Migration Notes for v0.3.0 Users
-
-**Breaking Changes:**
-- Spreadsheet schema changed (columns removed/added)
-- `batch_send_emails()` deprecated → use `batch_send_drafts()`
-
-**Migration Steps:**
-1. Delete old token.json (scopes unchanged, but good practice)
-2. Run `email-classify-sheets` to create new spreadsheet
-3. Old spreadsheets will still work (read-only)
-
-**Backward Compatibility:**
-- `email-classify` (non-Sheets) still works
-- `batch_send_emails()` function kept but deprecated
+## Error Handling
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| 502 Gateway | Google API timeout | Retry with backoff |
+| No new emails | All processed | Send "새 이메일 없음" report |
+| Duplicate entry | Same email re-analyzed | Update existing row |
+| Missing body | Nested multipart | Recursive extraction |
+| Draft not found | Deleted in Gmail | Skip, log warning |
+| Draft creation failed | API error | Log error, continue |
