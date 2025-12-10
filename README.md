@@ -1,4 +1,4 @@
-# Email Agent v0.6.2
+# Email Agent v0.6.3
 
 **Claude Code 슬래시 명령어로 Gmail 이메일을 자동 분류하고 답장 초안을 생성하는 도구**
 
@@ -8,7 +8,7 @@
 - **슬래시 명령어** - `/email-analyze`, `/email-draft`, `/email-send`
 - **Gmail 초안 자동 생성** - 분석 시 초안 자동 생성 → 임시보관함에서 바로 확인
 - **통합 스프레드시트** - 신규 메일 + 처리 이력 탭으로 관리
-- **수신유형 기반 우선순위** - To/CC/그룹메일에 따른 자동 조정
+- **맥락 기반 우선순위** - 하드코딩 없이 Claude가 이메일 맥락에서 종합 판단
 - **답장 여부 자동 체크** - Gmail Thread API로 답장 상태 확인
 
 ---
@@ -18,15 +18,15 @@
 ### 1. 저장소 클론
 
 ```bash
-git clone https://github.com/your-username/email_agent.git
-cd email_agent
+git clone https://github.com/your-username/email-agent.git
+cd email-agent
 ```
 
 ### 2. Python 환경 설정
 
 ```bash
-python -m venv ~/.venv
-source ~/.venv/bin/activate  # Linux/Mac
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
@@ -47,7 +47,7 @@ pip install -r requirements.txt
 ### 4. 최초 인증
 
 ```bash
-~/.venv/bin/python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
+python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
 # 브라우저에서 Google 계정 로그인 → 권한 승인
 ```
 
@@ -58,7 +58,6 @@ pip install -r requirements.txt
 npm install -g @anthropic-ai/claude-code
 
 # 프로젝트 디렉토리에서 실행
-cd email_agent
 claude
 ```
 
@@ -144,23 +143,35 @@ claude
 
 ---
 
-## 우선순위 기준
+## 우선순위 시스템 (v0.6.3)
 
-| 점수 | 레벨 | 기준 |
-|------|------|------|
-| P5 | 최우선 | 직속상관, 긴급 키워드, 마감 24시간 내 |
-| P4 | 긴급 | 중요 발신자, 액션 요청, 마감 1주 내 |
-| P3 | 보통 | 일반 업무, 참조용 |
-| P2 | 낮음 | 공지사항, FYI |
-| P1 | 최저 | 자동메일, 뉴스레터, 광고 |
+### 맥락 기반 판단
 
-### 수신유형별 조정
+하드코딩된 규칙 없이 Claude가 이메일 맥락에서 종합 추론:
 
-| 수신유형 | 조정 |
-|----------|------|
-| 📩 직접수신 (To) | 유지 |
-| 📋 참조 (CC) | -1 |
-| 👥 그룹메일 | -1 |
+- **어투** → 상하관계 추론 ("부탁드립니다" vs "확인 바랍니다")
+- **서명** → 직급/부서 파악
+- **내용** → 요청 강도, 긴급도 판단
+
+### 5가지 판단 축
+
+| 축 | 높음 | 낮음 |
+|----|------|------|
+| 발신자 관계 | 상위 직급 추정 | 자동발송, 마케팅 |
+| 요청 강도 | 즉시 결정/승인 필요 | FYI, 참고 |
+| 긴급 신호 | 오늘, ASAP, 긴급 | 시간 날 때, no rush |
+| 메일 유형 | 개인 1:1 요청 | 전체 공지, 뉴스레터 |
+| 수신 방식 | To (직접) | CC, 그룹 (-1) |
+
+### 우선순위 정의
+
+| 등급 | 기준 |
+|------|------|
+| **P5** | 상위 직급 + 긴급 + 즉시 액션 (5-10%만) |
+| **P4** | 마감일 1주 내 + 액션 필요 |
+| **P3** | 일반 업무, 여유 있는 회신 (기본값) |
+| **P2** | 공지, FYI, 참고용 |
+| **P1** | 자동발송, 뉴스레터, 마케팅 |
 
 ---
 
@@ -171,12 +182,15 @@ email_agent/
 ├── email_classifier/
 │   ├── gmail_client.py       # Gmail API 클라이언트
 │   └── sheets_client.py      # Sheets API 클라이언트
-├── .claude/commands/
-│   ├── email-analyze.md      # /email-analyze 명령어
-│   ├── email-draft.md        # /email-draft 명령어
-│   └── email-send.md         # /email-send 명령어
+├── .claude/
+│   ├── commands/
+│   │   ├── email-analyze.md  # /email-analyze 명령어
+│   │   ├── email-draft.md    # /email-draft 명령어
+│   │   └── email-send.md     # /email-send 명령어
+│   └── skills/
+│       └── prioritize-email.md  # 우선순위 판단 가이드
 ├── scripts/
-│   └── daily_email_analyze.sh  # cron 자동화 스크립트
+│   └── daily_email_analyze.sh   # cron 자동화 스크립트
 ├── credentials.json          # Google OAuth (직접 생성)
 ├── token.json               # OAuth 토큰 (자동 생성)
 ├── email_history_config.json # 스프레드시트 ID (자동 생성)
@@ -191,23 +205,14 @@ email_agent/
 ### Cron 설정 (매일 8시)
 
 ```bash
+chmod +x scripts/daily_email_analyze.sh
 crontab -e
 
 # 아래 줄 추가
 0 8 * * * /path/to/email_agent/scripts/daily_email_analyze.sh
 ```
 
-### 스크립트 내용
-
-```bash
-#!/bin/bash
-cd /path/to/email_agent
-LOG_FILE="logs/daily_analyze_$(date +%Y%m%d).log"
-mkdir -p logs
-echo "=== Started: $(date) ===" >> "$LOG_FILE"
-claude -p "이메일 분석해줘" --dangerously-skip-permissions >> "$LOG_FILE" 2>&1
-echo "=== Completed: $(date) ===" >> "$LOG_FILE"
-```
+스크립트가 자동으로 프로젝트 경로를 감지하므로, 어느 위치에 설치해도 동작합니다.
 
 ---
 
@@ -225,7 +230,7 @@ cp ~/Downloads/client_secret_*.json ./credentials.json
 ```bash
 # token.json 삭제 후 재인증
 rm token.json
-~/.venv/bin/python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
+python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
 ```
 
 ### 스프레드시트가 안 보임

@@ -1,4 +1,4 @@
-# Implementation Plan - Email Agent v0.6.2
+# Implementation Plan - Email Agent v0.6.3
 
 ## Overview
 
@@ -6,7 +6,13 @@ Streamlined workflow: Analyze emails, auto-create Gmail drafts, user reviews in 
 
 **Goal**: 초안 내용 있으면 Gmail 초안 자동 생성하여 검토 준비 완료 상태로 제공.
 
-### v0.6.2 New Features
+### v0.6.3 New Features
+
+- **맥락 기반 우선순위**: 하드코딩 없이 Claude가 이메일 맥락에서 종합 판단
+- **5가지 판단 축**: 발신자 관계, 요청 강도, 긴급 신호, 메일 유형, 수신 방식
+- **prioritize-email.md 스킬**: 우선순위 판단 가이드라인 분리
+
+### v0.6.2 Features (Completed)
 
 - **Gmail 초안 자동 생성**: /email-analyze 시 초안 내용 있으면 즉시 Gmail 초안 생성
 - **Draft ID 자동 저장**: 스프레드시트에 Draft ID 자동 업데이트
@@ -25,7 +31,46 @@ Streamlined workflow: Analyze emails, auto-create Gmail drafts, user reviews in 
 
 ---
 
-## Architecture (v0.6.2)
+## Priority System (v0.6.3)
+
+### 맥락 기반 판단 원칙
+
+**하드코딩된 규칙 없이** Claude가 이메일 맥락에서 종합 추론:
+
+```
+Claude 자연어 이해 능력 활용:
+- 어투 → 상하관계 추론 ("부탁드립니다" vs "확인 바랍니다")
+- 서명 → 직급/부서 파악
+- 내용 → 요청 강도, 긴급도 판단
+```
+
+### 5가지 판단 축
+
+| 축 | 높음 | 낮음 |
+|----|------|------|
+| 발신자 관계 | 상위 직급 추정 | 자동발송, 마케팅 |
+| 요청 강도 | 즉시 결정/승인 필요 | FYI, 참고 |
+| 긴급 신호 | 오늘, ASAP, 긴급 | 시간 날 때, no rush |
+| 메일 유형 | 개인 1:1 요청 | 전체 공지, 뉴스레터 |
+| 수신 방식 | To (직접) | CC, 그룹 (-1) |
+
+### 우선순위 정의
+
+| P | 기준 |
+|---|------|
+| **P5** | 상위 직급 + 긴급 + 즉시 액션 (5-10%만) |
+| **P4** | 마감일 1주 내 + 액션 필요 |
+| **P3** | 일반 업무, 여유 있는 회신 (기본값) |
+| **P2** | 공지, FYI, 참고용 |
+| **P1** | 자동발송, 뉴스레터, 마케팅 |
+
+### 스킬 파일
+
+`.claude/skills/prioritize-email.md`에서 상세 가이드라인 참조
+
+---
+
+## Architecture (v0.6.3)
 
 ### Workflow Diagram
 
@@ -195,14 +240,19 @@ def update_draft_id(spreadsheet_id: str, row: int, draft_id: str) -> None  # NEW
 
 ```bash
 # crontab -e
-0 8 * * * /home/kyuwon/projects/email_agent/scripts/daily_email_analyze.sh
+0 8 * * * /path/to/email_agent/scripts/daily_email_analyze.sh
 ```
 
 ### Script (scripts/daily_email_analyze.sh)
 
 ```bash
 #!/bin/bash
-cd /home/kyuwon/projects/email_agent
+# Get script directory (works even when called via cron)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_DIR"
+mkdir -p logs
 LOG_FILE="logs/daily_analyze_$(date +%Y%m%d).log"
 echo "=== Started: $(date) ===" >> "$LOG_FILE"
 claude -p "이메일 분석해줘" --dangerously-skip-permissions >> "$LOG_FILE" 2>&1

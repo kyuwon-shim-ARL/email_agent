@@ -25,7 +25,7 @@
 ### 2. 로컬 저장소와 GitHub 연결
 
 ```bash
-cd /home/kyuwon/projects/email_agent
+cd /path/to/email_agent
 
 # GitHub 저장소와 연결 (YOUR_USERNAME 수정!)
 git remote add origin https://github.com/YOUR_USERNAME/email-agent.git
@@ -86,7 +86,7 @@ README.md 상단에 배지를 추가하면 전문적으로 보입니다:
 ## 📄 LICENSE 추가 (권장)
 
 ```bash
-cd /home/kyuwon/projects/email_agent
+cd /path/to/email_agent
 
 # MIT 라이선스 생성
 cat > LICENSE << 'EOF'

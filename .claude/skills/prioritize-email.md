@@ -1,376 +1,142 @@
-# Email Priority Scoring Skill
+# Email Priority Skill
 
-Analyze an email and calculate detailed priority score based on a 3-dimensional scoring system.
+이메일의 우선순위(P1-P5)를 맥락 기반으로 판단합니다.
 
-## Input Format
+## 핵심 원칙
 
-You will receive email information in this format:
+**하드코딩된 규칙 없이, 이메일 맥락에서 종합적으로 추론**
 
-```
-EMAIL TO ANALYZE:
-Subject: {subject}
-From: {sender}
-Body Preview: {body preview - first 500 chars}
-
-CONVERSATION HISTORY:
-- Total sent to this sender: {sent_count}
-- Total received from this sender: {received_count}
-- Recent exchanges (last 7 days): {recent_7days}
-- First contact: {true/false}
-- Weighted score: {(sent × 3) + (received × 1)}
-```
-
-## Scoring Framework
-
-Calculate score in 3 independent dimensions:
-
-### 1. SENDER IMPORTANCE (0-100 points)
-
-**A. Relationship Depth (0-50 points)**
-
-Based on weighted_exchanges = (sent × 3) + (received × 1)
-
-- weighted >= 100: **50 points** (핵심 관계)
-- weighted >= 50: **40 points**
-- weighted >= 20: **30 points**
-- weighted >= 10: **20 points**
-- weighted >= 5: **10 points**
-- weighted < 5: **5 points**
-- first_contact: **0 points** (관계 없음, 하지만 조사 필요)
-
-**B. Role/Position (0-30 points)**
-
-Infer from email content, signature, domain, tone:
-
-- **30 points**: CEO, 임원, 이사회, C-level executives
-- **25 points**: 직속 상사, 부서장, direct manager
-- **20 points**: 고객 (유료), VIP 파트너, paying customer
-- **15 points**: 팀원, 동료, 프로젝트 멤버, teammate
-- **10 points**: 외부 협력사, 일반 고객, vendor
-- **5 points**: 외부 일반, 처음 연락, general external
-- **0 points**: 자동 시스템, 봇, automated system
-
-**C. Recent Activity (0-20 points)**
-
-Based on exchanges in last 7 days:
-
-- recent >= 10: **20 points** (매일 교신)
-- recent >= 5: **15 points** (주 5회)
-- recent >= 3: **10 points** (주 3회)
-- recent >= 1: **5 points** (주 1회)
-- recent == 0: **0 points** (오랜만)
-
-**Sender Importance Total = A + B + C (max 100)**
+Claude는 다음을 자연스럽게 파악할 수 있습니다:
+- 어투에서 상하관계 추론 ("부탁드립니다" vs "해주세요" vs "확인 바랍니다")
+- 서명에서 직급/부서 파악
+- 요청의 강도와 긴급도 판단
+- 메일 유형 (개인 요청 vs 전체 공지 vs 자동발송)
 
 ---
 
-### 2. CONTENT URGENCY (0-100 points)
+## 판단 기준 (5가지 축)
 
-**A. Time Sensitivity (0-40 points)**
+### 1. 발신자-수신자 관계
 
-Look for time-related keywords and context:
+이메일 내용에서 추론:
 
-- **40 points**: 오늘/지금 필요
-  - Keywords: "today", "ASAP", "urgent", "지금", "오늘 안", "즉시"
-  - Context: same-day deadline
+| 신호 | 해석 |
+|------|------|
+| 정중한 요청 어투 ("검토 부탁드립니다") | 동료 또는 하위 직급 |
+| 지시형 어투 ("확인하세요", "처리 바랍니다") | 상위 직급 가능성 |
+| 서명에 직급 표시 (팀장, 부장, Director 등) | 직급 직접 확인 |
+| 이전 대화에서 호칭 ("○○님", "○○ 씨") | 관계 힌트 |
 
-- **35 points**: 이번 주 필요
-  - Keywords: "this week", "EOW", "end of week", "이번 주"
-  - Context: within days
+### 2. 요청 강도
 
-- **30 points**: 마감일 명시
-  - Keywords: "deadline", "due date", "by [date]", "~까지"
-  - Context: specific deadline mentioned
+| 강도 | 예시 | 우선순위 영향 |
+|------|------|--------------|
+| 즉시 결정 필요 | "승인 부탁", "오늘까지 회신" | ↑↑ |
+| 명시적 액션 요청 | "검토해주세요", "의견 주세요" | ↑ |
+| 소프트 요청 | "시간 되실 때", "참고해주세요" | → |
+| 정보 공유 | "공유드립니다", "FYI" | ↓ |
 
-- **20 points**: 곧 필요
-  - Keywords: "soon", "upcoming", "곧", "조만간"
-  - Context: near future
+### 3. 긴급 신호
 
-- **10 points**: 여유 있음
-  - Keywords: "when you can", "no rush", "시간 날 때"
-  - Context: flexible timeline
+**시간 관련 키워드**:
+- 🔴 즉시: "오늘", "지금", "ASAP", "urgent", "긴급"
+- 🟠 이번 주: "이번 주", "금요일까지", "EOW"
+- 🟡 마감일 있음: "~까지", "deadline", "마감"
+- 🟢 여유: "시간 날 때", "no rush"
 
-- **0 points**: 시간 제약 없음
-  - No time-related keywords
-  - General information sharing
+### 4. 메일 유형
 
-**B. Action Required (0-35 points)**
+| 유형 | 특징 | 기본 우선순위 |
+|------|------|--------------|
+| 개인 1:1 요청 | To에 나만 지정, 직접 요청 | P3-P5 |
+| 팀/프로젝트 메일 | 소규모 그룹, 업무 관련 | P3-P4 |
+| 전체 공지 | 대규모 수신자, 공지성 | P2 |
+| 자동 발송 | noreply@, 시스템 알림 | P1 |
+| 뉴스레터/마케팅 | 구독 메일, 홍보 | P1 |
 
-Analyze what sender wants you to do:
+### 5. 수신 방식
 
-- **35 points**: 즉시 결정 필요 (immediate decision)
-  - Keywords: "please approve", "need your decision", "confirm by", "승인"
-  - Action: approve/reject/choose something
-
-- **30 points**: 즉시 작업 필요 (immediate task)
-  - Keywords: "please send", "can you provide", "need you to", "보내주세요"
-  - Action: do something concrete
-
-- **25 points**: 직접 질문 (direct question)
-  - Contains "?"
-  - Keywords: "what do you think", "could you", "can you", "어떻게 생각"
-  - Action: provide answer/opinion
-
-- **15 points**: 정보 제공 요청 (information request)
-  - Keywords: "let me know", "update me", "알려주세요", "공유"
-  - Action: share information
-
-- **10 points**: 소프트 요청 (soft request)
-  - Keywords: "if possible", "would appreciate", "가능하면"
-  - Action: optional action
-
-- **5 points**: 참고 (FYI)
-  - Keywords: "for your information", "heads up", "참고", "FYI"
-  - Action: just be aware
-
-- **0 points**: 액션 불필요 (no action)
-  - Newsletters, automated notifications
-  - Pure information broadcast
-
-**C. Content Importance (0-25 points)**
-
-Assess business/project impact:
-
-- **25 points**: 비즈니스 크리티컬 (business critical)
-  - Topics: 계약, 법적 문제, 보안 이슈, 재무, contract, legal, security, financial
-  - Impact: affects company operations
-
-- **20 points**: 프로젝트 크리티컬 (project critical)
-  - Topics: 프로젝트 차단, 팀 블로커, 고객 이슈, blocker, critical bug
-  - Impact: blocks team progress
-
-- **15 points**: 업무 중요 (work important)
-  - Topics: 미팅 일정, 업무 협의, 리뷰 요청, meeting, review, collaboration
-  - Impact: important for workflow
-
-- **10 points**: 업무 일반 (work general)
-  - Topics: 일반 문의, 정보 공유, general inquiry, information sharing
-  - Impact: routine work
-
-- **5 points**: 참고용 (reference)
-  - Topics: 공지사항, 업데이트, announcement, update
-  - Impact: good to know
-
-- **0 points**: 광고/마케팅 (marketing)
-  - Topics: 뉴스레터, 프로모션, newsletter, promotion
-  - Impact: none
-
-**Content Urgency Total = A + B + C (max 100)**
+| 방식 | 의미 | 조정 |
+|------|------|------|
+| To (직접) | 내가 주 담당자 | 유지 |
+| CC (참조) | 참고용, 직접 액션 불필요 | -1 |
+| 그룹/메일링리스트 | 전체 대상 | -1 |
 
 ---
 
-### 3. CONTEXT MODIFIERS (-20 to +20 points)
+## 우선순위 정의
 
-**Bonuses (add points):**
-
-- **+20**: 첫 연락 (first contact)
-  - first_contact = true
-  - Potential opportunity, needs investigation
-
-- **+15**: 긴 대화 스레드 (long conversation thread)
-  - Check if subject has "Re: Re: Re:" or similar
-  - Ongoing discussion, high relevance
-
-- **+10**: 여러 수신자 CC (multiple recipients)
-  - If body mentions many people or "all"
-  - High visibility, team-related
-
-- **+10**: 내가 마지막 발신 (I sent last message)
-  - If this is a reply to my question
-  - High relevance to me
-
-- **+5**: 읽지 않음 (unread)
-  - Assume unread if being processed
-  - Still needs attention
-
-**Penalties (subtract points):**
-
-- **-10**: 수신만 한 발신자 (receive-only sender)
-  - sent = 0 and received > 5
-  - One-way broadcast (company announcements)
-
-- **-15**: 자동 발송 감지 (automated message detected)
-  - Keywords: "do not reply", "noreply@", "automated", "자동"
-  - Sender domain: "notifications@", "no-reply@"
-  - Signature: "This is an automated message"
-
-- **-20**: 긴 미확인 기간 (long unread period)
-  - If email seems old (can't detect directly, but infer from content)
-  - Lower priority for old emails
-
-**Context Total = sum of bonuses - sum of penalties (range: -20 to +20)**
+| 등급 | 이름 | 기준 |
+|------|------|------|
+| **P5** | 최우선 | 상위 직급의 직접 요청 + 긴급 + 즉시 액션 필요 |
+| **P4** | 긴급 | 명시적 마감일 + 액션 필요 OR 중요 발신자 요청 |
+| **P3** | 보통 | 일반 업무 요청, 회신 필요하지만 여유 있음 |
+| **P2** | 낮음 | 공지사항, 참고용, FYI |
+| **P1** | 최저 | 자동발송, 뉴스레터, 마케팅, 스팸 |
 
 ---
 
-## Final Calculation
+## 판단 가이드라인
 
-```
-final_score = (sender_importance × 0.35) + (content_urgency × 0.50) + context_modifiers
+### P5 판단 시
 
-normalized_score = min(100, max(0, final_score))
-```
+다음 조건 대부분 충족:
+- [ ] 발신자가 상위 직급으로 추정됨 (어투, 서명, 요청 방식)
+- [ ] 긴급 키워드 있음 (오늘, 즉시, ASAP)
+- [ ] 명시적 액션 요청 (승인, 결정, 회신)
+- [ ] To에 직접 지정됨
 
-**Priority Mapping:**
+### P4 판단 시
 
-- **90-100 points**: Priority 5 (최우선)
-- **70-89 points**: Priority 4 (긴급)
-- **40-69 points**: Priority 3 (보통)
-- **20-39 points**: Priority 2 (낮음)
-- **0-19 points**: Priority 1 (최저)
+다음 중 2개 이상 충족:
+- [ ] 마감일이 1주일 이내
+- [ ] 명시적 액션 요청 있음
+- [ ] 업무상 중요한 내용 (프로젝트, 미팅, 검토)
+- [ ] 자주 소통하는 발신자
 
----
+### P3 판단 시
 
-## Override Rules
+- 일반적인 업무 메일
+- 회신이 필요하지만 급하지 않음
+- 명확한 긴급 신호 없음
 
-Apply these rules AFTER calculating base priority:
+### P2 판단 시
 
-1. **첫 연락 최소 보장**
-   - If first_contact = true AND priority < 3:
-   - Set priority = 3
-   - Add reason: "(첫 연락 - 조사 필요)"
+- 전체 공지, 안내 메일
+- 참고용 (FYI)
+- CC로 받음 + 직접 액션 불필요
 
-2. **긴급 키워드 강제 승격**
-   - If "urgent" or "ASAP" in subject/body AND priority < 4:
-   - Set priority = 4
-   - Add reason: "(긴급 키워드)"
+### P1 판단 시
 
-3. **CEO/임원 최소 보장**
-   - If sender_role_score >= 30 AND priority < 4:
-   - Set priority = 4
-   - Add reason: "(임원 발신)"
-
-4. **자동 발송 강제 하향**
-   - If automated message detected:
-   - Set priority = min(priority, 2)
-   - Add reason: "(자동 발송)"
+- 자동 발송 메일 (noreply@, 시스템 알림)
+- 뉴스레터, 마케팅, 프로모션
+- 구독 메일
 
 ---
 
-## Output Format
-
-Respond with detailed JSON:
+## 출력 형식
 
 ```json
 {
-  "sender_importance": {
-    "relationship_depth": {
-      "score": 20,
-      "reason": "보낸 5회, 받은 10회 → weighted=25"
-    },
-    "role_position": {
-      "score": 30,
-      "reason": "CEO (email signature indicates C-level)"
-    },
-    "recent_activity": {
-      "score": 5,
-      "reason": "이번 주 1회 교신"
-    },
-    "total": 55
-  },
-  "content_urgency": {
-    "time_sensitivity": {
-      "score": 40,
-      "reason": "오늘 필요 ('need approval by EOD today')"
-    },
-    "action_required": {
-      "score": 35,
-      "reason": "즉시 결정 필요 (승인 요청)"
-    },
-    "content_importance": {
-      "score": 25,
-      "reason": "비즈니스 크리티컬 (계약 승인)"
-    },
-    "total": 100
-  },
-  "context_modifiers": {
-    "bonuses": [
-      "+10: 내가 마지막 발신 (이 메일은 내 질문에 대한 답변)"
-    ],
-    "penalties": [],
-    "total": 10
-  },
-  "calculation": {
-    "formula": "(55 × 0.35) + (100 × 0.50) + 10",
-    "breakdown": "19.25 + 50 + 10 = 79.25",
-    "final_score": 79.25,
-    "normalized_score": 79
-  },
   "priority": 4,
   "priority_label": "긴급",
-  "override_applied": null,
-  "summary": "CEO의 긴급 승인 요청. 오늘 중 결정 필요.",
-  "recommendation": "즉시 검토하고 답변 필요. 비즈니스 크리티컬 사안."
+  "reasoning": {
+    "sender_relationship": "서명에 '팀장' 표시, 지시형 어투 사용",
+    "request_strength": "검토 후 회신 요청, 명시적 액션 필요",
+    "urgency_signals": "이번 주 금요일까지 마감",
+    "mail_type": "개인 1:1 업무 요청",
+    "recipient_type": "To에 직접 지정"
+  },
+  "summary": "팀장의 문서 검토 요청, 금요일까지 회신 필요"
 }
 ```
 
 ---
 
-## Analysis Guidelines
+## 주의사항
 
-1. **Be thorough**: Read the entire email body preview carefully
-2. **Look for context clues**: Email signature, domain, tone, formatting
-3. **Consider Korean and English**: Handle both languages naturally
-4. **Explain your reasoning**: Every score should have a clear reason
-5. **Be conservative with high scores**: Priority 5 should be rare (5-10% of emails)
-6. **Use common sense**: If something feels off, adjust accordingly
-
----
-
-## Example Analysis
-
-**Input:**
-```
-Subject: Re: Q4 Budget Approval
-From: ceo@company.com
-Body: Hi, I need your final approval on the Q4 budget by end of day today. This is critical for our board meeting tomorrow. Please review the attached spreadsheet and confirm. Thanks.
-
-CONVERSATION HISTORY:
-- Sent: 5
-- Received: 10
-- Recent (7 days): 1
-- First contact: false
-- Weighted: 25
-```
-
-**Expected Output:**
-```json
-{
-  "sender_importance": {
-    "relationship_depth": {"score": 20, "reason": "weighted=25 (보낸 5회, 받은 10회)"},
-    "role_position": {"score": 30, "reason": "CEO (ceo@company.com domain)"},
-    "recent_activity": {"score": 5, "reason": "이번 주 1회"},
-    "total": 55
-  },
-  "content_urgency": {
-    "time_sensitivity": {"score": 40, "reason": "오늘 마감 ('by end of day today')"},
-    "action_required": {"score": 35, "reason": "즉시 결정 필요 ('need your approval', 'confirm')"},
-    "content_importance": {"score": 25, "reason": "비즈니스 크리티컬 (budget approval for board meeting)"},
-    "total": 100
-  },
-  "context_modifiers": {
-    "bonuses": ["+10: 내가 마지막 발신 (Re: indicates ongoing thread)"],
-    "penalties": [],
-    "total": 10
-  },
-  "calculation": {
-    "formula": "(55 × 0.35) + (100 × 0.50) + 10",
-    "breakdown": "19.25 + 50 + 10 = 79.25",
-    "final_score": 79.25,
-    "normalized_score": 79
-  },
-  "priority": 4,
-  "priority_label": "긴급",
-  "override_applied": "CEO/임원 최소 보장 (already met)",
-  "summary": "CEO의 Q4 예산 승인 요청. 오늘 중 결정 필요 (내일 이사회 회의).",
-  "recommendation": "최우선 처리. 첨부 파일 검토 후 즉시 승인/거절 회신."
-}
-```
-
----
-
-## Notes
-
-- This skill is designed to work with the Email Agent v0.4.0+ system
-- Scores should be calculated independently for each dimension
-- The final priority should match user's intuitive sense of importance
-- When in doubt, explain your reasoning clearly in the reason field
+1. **첫 연락은 주의**: 처음 받는 메일이면 P3 이상으로 (관계 파악 필요)
+2. **CC는 보수적으로**: CC로 받은 메일은 직접 액션 필요한지 먼저 확인
+3. **맥락 우선**: 키워드보다 전체 맥락이 중요
+4. **P5는 드물게**: 전체 메일의 5-10%만 P5 (정말 긴급한 것만)
+5. **애매하면 P3**: 판단이 어려우면 P3로 (기본값)

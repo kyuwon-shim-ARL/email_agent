@@ -13,7 +13,8 @@
 ```python
 # 1. 이메일 데이터 수집
 import sys
-sys.path.insert(0, '/home/kyuwon/projects/email_agent')
+import os
+sys.path.insert(0, os.getcwd())
 
 from email_classifier.gmail_client import GmailClient
 from email_classifier.sheets_client import SheetsClient
@@ -55,7 +56,8 @@ for i, e in enumerate(emails, 1):
 
 from datetime import datetime
 import sys
-sys.path.insert(0, '/home/kyuwon/projects/email_agent')
+import os
+sys.path.insert(0, os.getcwd())
 
 from email_classifier.gmail_client import GmailClient
 from email_classifier.sheets_client import SheetsClient
