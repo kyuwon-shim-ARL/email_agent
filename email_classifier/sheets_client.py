@@ -1,7 +1,7 @@
 """Google Sheets API client for email tracking."""
 import os.path
 import re
-from typing import Any
+from typing import List, Dict, Optional, Tuple, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -429,7 +429,7 @@ class SheetsClient:
     def add_email_row(
         self,
         spreadsheet_id: str,
-        email_data: dict[str, Any],
+        email_data: Dict[str, Any],
         draft_id: str = "",
         draft_subject: str = "",   # NEW: Draft subject
         draft_body: str = "",      # NEW: Draft body content
@@ -501,7 +501,7 @@ class SheetsClient:
             body={"values": [row]},
         ).execute()
 
-    def get_drafts_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
+    def get_drafts_to_send(self, spreadsheet_id: str) -> List[Dict[str, Any]]:
         """
         Get draft IDs for emails marked for sending (v0.5.2 schema).
 
@@ -559,7 +559,7 @@ class SheetsClient:
         return drafts_to_send
 
     # Keep old function for backward compatibility
-    def get_emails_to_send(self, spreadsheet_id: str) -> list[dict[str, Any]]:
+    def get_emails_to_send(self, spreadsheet_id: str) -> List[Dict[str, Any]]:
         """
         DEPRECATED: Use get_drafts_to_send() instead.
 
@@ -608,7 +608,7 @@ class SheetsClient:
             ).execute()
 
     def batch_update_emails(
-        self, spreadsheet_id: str, emails: list[dict[str, Any]]
+        self, spreadsheet_id: str, emails: List[Dict[str, Any]]
     ) -> None:
         """
         Batch update multiple emails.
@@ -806,7 +806,7 @@ class SheetsClient:
         self,
         spreadsheet_id: str,
         sender_email: str,
-        sender_stats: dict[str, Any],
+        sender_stats: Dict[str, Any],
     ) -> None:
         """
         Add or update a sender in the 발신자 관리 tab.
@@ -886,7 +886,7 @@ class SheetsClient:
                 body={"values": [new_row]},
             ).execute()
 
-    def _calculate_sender_auto_score(self, stats: dict[str, Any]) -> int:
+    def _calculate_sender_auto_score(self, stats: Dict[str, Any]) -> int:
         """
         Calculate automatic sender importance score (0-100).
 
@@ -974,7 +974,7 @@ class SheetsClient:
         else:
             return auto_score
 
-    def get_sender_importance_scores(self, spreadsheet_id: str) -> dict[str, int]:
+    def get_sender_importance_scores(self, spreadsheet_id: str) -> Dict[str, int]:
         """
         Get sender importance scores from 발신자 관리 tab.
 
@@ -1124,7 +1124,7 @@ class SheetsClient:
 
         return spreadsheet_id
 
-    def _get_history_tab_format_requests(self, sheet_id: int) -> list[dict]:
+    def _get_history_tab_format_requests(self, sheet_id: int) -> List[dict]:
         """
         Get formatting requests for history tab (Email Tracker format).
 
@@ -1279,7 +1279,7 @@ class SheetsClient:
             ).execute()
             return 'added'
 
-    def _find_history_row(self, history_id: str, thread_id: str) -> dict | None:
+    def _find_history_row(self, history_id: str, thread_id: str) -> Optional[Dict[str, Any]]:
         """
         Find existing row in history by Thread ID (column P, index 15).
 
@@ -1350,7 +1350,7 @@ class SheetsClient:
 
         return ""
 
-    def get_tab_ids(self, spreadsheet_id: str) -> dict[str, int]:
+    def get_tab_ids(self, spreadsheet_id: str) -> Dict[str, int]:
         """
         Get sheet IDs for each tab.
 

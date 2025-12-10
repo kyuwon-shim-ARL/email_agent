@@ -1,6 +1,6 @@
 """Gmail API client for fetching emails."""
 import os.path
-from typing import Any
+from typing import Any, List, Dict, Optional, Tuple
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -51,7 +51,7 @@ class GmailClient:
 
         return creds
 
-    def get_recent_emails(self, max_results: int = 10, skip_processed: bool = True) -> list[dict[str, Any]]:
+    def get_recent_emails(self, max_results: int = 10, skip_processed: bool = True) -> List[Dict[str, Any]]:
         """
         Get recent emails from inbox.
 
@@ -192,7 +192,7 @@ class GmailClient:
 
         return ""
 
-    def get_recipient_type(self, headers: list[dict], my_email: str | None = None) -> dict[str, Any]:
+    def get_recipient_type(self, headers: List[dict], my_email: Optional[str] = None) -> Dict[str, Any]:
         """
         Determine how the user received the email (To, CC, or Group).
 
@@ -308,7 +308,7 @@ class GmailClient:
 
     def create_draft(
         self, thread_id: str, to: str, subject: str, body: str, is_html: bool = True
-    ) -> dict[str, Any]:
+    ) -> Dict[str, Any]:
         """
         Create a draft reply in Gmail with HTML support.
 
@@ -346,7 +346,7 @@ class GmailClient:
 
         return draft
 
-    def send_draft(self, draft_id: str) -> dict[str, Any]:
+    def send_draft(self, draft_id: str) -> Dict[str, Any]:
         """
         Send an existing Gmail draft by ID.
 
@@ -371,8 +371,8 @@ class GmailClient:
         return sent
 
     def send_email(
-        self, to: str, subject: str, body: str, cc: str | None = None, thread_id: str | None = None
-    ) -> dict[str, Any]:
+        self, to: str, subject: str, body: str, cc: Optional[str] = None, thread_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Send an email directly (for batch sending).
 
@@ -413,7 +413,7 @@ class GmailClient:
 
         return sent
 
-    def batch_send_drafts(self, draft_ids: list[str]) -> list[dict[str, Any]]:
+    def batch_send_drafts(self, draft_ids: List[str]) -> List[Dict[str, Any]]:
         """
         Send multiple Gmail drafts by ID.
 
@@ -457,7 +457,7 @@ class GmailClient:
 
         return results
 
-    def batch_send_emails(self, emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def batch_send_emails(self, emails: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         DEPRECATED: Use batch_send_drafts() instead.
 
@@ -504,7 +504,7 @@ class GmailClient:
 
         return results
 
-    def get_sent_emails(self, max_results: int = 50) -> list[dict[str, Any]]:
+    def get_sent_emails(self, max_results: int = 50) -> List[Dict[str, Any]]:
         """
         Get user's sent emails for style analysis.
 
@@ -553,7 +553,7 @@ class GmailClient:
 
         return sent_emails
 
-    def get_conversation_history(self, sender_email: str, max_results: int = 20) -> dict[str, Any]:
+    def get_conversation_history(self, sender_email: str, max_results: int = 20) -> Dict[str, Any]:
         """
         Get conversation history with a specific sender.
 
@@ -633,8 +633,8 @@ class GmailClient:
     def collect_all_sender_stats(
         self,
         max_emails: int = 200,
-        classified_emails: list[dict[str, Any]] | None = None
-    ) -> dict[str, dict[str, Any]]:
+        classified_emails: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Collect statistics for all senders for sender management tab.
 
@@ -771,7 +771,7 @@ class GmailClient:
 
         return result
 
-    def get_label_names(self, label_ids: list[str]) -> list[str]:
+    def get_label_names(self, label_ids: List[str]) -> List[str]:
         """
         Convert label IDs to label names.
 
@@ -794,7 +794,7 @@ class GmailClient:
             for lid in label_ids
         ]
 
-    def create_or_get_label(self, label_name: str, color: dict[str, str] | None = None) -> str:
+    def create_or_get_label(self, label_name: str, color: Optional[Dict[str, str]] = None) -> str:
         """
         Create a Gmail label or get existing one.
 
@@ -839,7 +839,7 @@ class GmailClient:
 
         return created["id"]
 
-    def setup_email_labels(self) -> dict[str, str]:
+    def setup_email_labels(self) -> Dict[str, str]:
         """
         Set up all email classification labels with colors.
 
@@ -890,7 +890,7 @@ class GmailClient:
         message_id: str,
         status: str,
         priority: int,
-        label_ids: dict[str, str]
+        label_ids: Dict[str, str]
     ) -> None:
         """
         Apply status and priority labels to an email.
@@ -947,7 +947,7 @@ class GmailClient:
                 body=modify_body
             ).execute()
 
-    def remove_all_classification_labels(self, message_id: str, label_ids: dict[str, str]) -> None:
+    def remove_all_classification_labels(self, message_id: str, label_ids: Dict[str, str]) -> None:
         """
         Remove all classification labels from an email.
 
@@ -970,8 +970,8 @@ class GmailClient:
         self,
         subject: str,
         body: str,
-        label_ids: dict[str, str] | None = None
-    ) -> dict[str, Any]:
+        label_ids: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
         """
         Send a summary report email to self with "메일요약" label.
 
@@ -1026,7 +1026,7 @@ class GmailClient:
 
         return sent
 
-    def mark_as_processed(self, message_ids: list[str], label_ids: dict[str, str] | None = None) -> None:
+    def mark_as_processed(self, message_ids: List[str], label_ids: Optional[Dict[str, str]] = None) -> None:
         """
         Mark emails as processed by adding "처리완료" label.
 
