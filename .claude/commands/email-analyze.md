@@ -7,7 +7,7 @@ Gmail 이메일을 분석하고 Google Sheets에 기록합니다. 초안 내용�
 ### 1단계: 이메일 데이터 수집
 
 ```bash
-~/.venv/bin/python << 'EOF'
+python << 'EOF'
 import sys
 import os
 sys.path.insert(0, os.getcwd())
@@ -154,7 +154,7 @@ EOF
 ### 3단계: Sheets 생성, 라벨 적용, 보고서 발송
 
 ```bash
-~/.venv/bin/python << 'EOF'
+python << 'EOF'
 import sys
 import os
 sys.path.insert(0, os.getcwd())

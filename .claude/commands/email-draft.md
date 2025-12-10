@@ -12,7 +12,7 @@
 ### 1단계: Gmail 초안 생성
 
 ```bash
-~/.venv/bin/python << 'EOF'
+python << 'EOF'
 import sys
 import os
 sys.path.insert(0, os.getcwd())

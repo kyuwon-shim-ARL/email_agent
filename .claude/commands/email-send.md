@@ -17,9 +17,10 @@ Sheets에서 "전송예정" 체크된 초안들을 일괄 발송합니다.
 ### 2단계: 일괄 발송
 
 ```bash
-~/.venv/bin/python << 'EOF'
+python << 'EOF'
 import sys
 import os
+import json
 sys.path.insert(0, os.getcwd())
 
 from email_classifier.gmail_client import GmailClient
@@ -28,13 +29,26 @@ from email_classifier.sheets_client import SheetsClient
 gmail = GmailClient()
 sheets = SheetsClient()
 
-# 스프레드시트 ID (사용자 입력값으로 교체)
-SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE"
+# Config에서 스프레드시트 ID 자동 로드
+try:
+    with open('email_history_config.json', 'r') as f:
+        config = json.load(f)
+    SPREADSHEET_ID = config.get('history_spreadsheet_id')
+    if not SPREADSHEET_ID:
+        print("❌ email_history_config.json에 spreadsheet_id가 없습니다.")
+        print("먼저 /email-analyze를 실행해주세요.")
+        sys.exit(1)
+except FileNotFoundError:
+    print("❌ email_history_config.json 파일이 없습니다.")
+    print("먼저 /email-analyze를 실행해주세요.")
+    sys.exit(1)
+
+print(f"📊 스프레드시트: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}")
 
 # Sheets에서 데이터 읽기
 result = sheets.service.spreadsheets().values().get(
     spreadsheetId=SPREADSHEET_ID,
-    range="Emails!A:O",
+    range="신규 메일!A:P",
 ).execute()
 rows = result.get("values", [])
 
@@ -44,16 +58,16 @@ if len(rows) < 2:
 
 print(f"📊 총 {len(rows)-1}개 행 로드\n")
 
-# 발송 대상 수집
+# 발송 대상 수집 (16열 스키마)
 to_send = []
 for row_idx, row in enumerate(rows[1:], start=2):
-    while len(row) < 15:
+    while len(row) < 16:
         row.append("")
 
     subject = row[3]          # D: 제목
     draft_subject = row[9]    # J: 초안(제목)
     send_scheduled = row[12]  # M: 전송예정
-    draft_id = row[13]        # N: Draft ID
+    draft_id = row[14]        # O: Draft ID (16열 스키마)
 
     # 전송예정 체크 + Draft ID 있는 항목만
     if send_scheduled.upper() == "TRUE" and draft_id:
@@ -95,15 +109,15 @@ for item in to_send:
         # Sheets 상태 업데이트
         sheets.service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"Emails!A{item['row_idx']}",
+            range=f"신규 메일!A{item['row_idx']}",
             valueInputOption="RAW",
             body={"values": [["답장완료"]]},
         ).execute()
 
-        # Draft ID 클리어 (발송 완료)
+        # Draft ID 클리어 (발송 완료) - O열
         sheets.service.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"Emails!N{item['row_idx']}",
+            range=f"신규 메일!O{item['row_idx']}",
             valueInputOption="RAW",
             body={"values": [[""]]},
         ).execute()

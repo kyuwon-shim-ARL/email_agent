@@ -7,7 +7,9 @@ Gmail 이메일을 자동으로 분류하고 답장 초안을 생성합니다.
 ### 1단계: Gmail 연결 및 이메일 가져오기
 
 ```bash
-~/.venv/bin/python -c "
+python -c "
+import sys, os
+sys.path.insert(0, os.getcwd())
 from email_classifier.gmail_client import GmailClient
 from email_classifier.sheets_client import SheetsClient
 import json
@@ -58,7 +60,9 @@ print('✅ 이메일 데이터 저장: /tmp/email_data.json')
 ### 3단계: Gmail 라벨 적용 및 Sheets 업데이트
 
 ```bash
-~/.venv/bin/python -c "
+python -c "
+import sys, os
+sys.path.insert(0, os.getcwd())
 from email_classifier.gmail_client import GmailClient
 from email_classifier.sheets_client import SheetsClient
 from datetime import datetime
