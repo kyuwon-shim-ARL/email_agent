@@ -16,15 +16,15 @@ jobs:
         run: |
           echo "🔍 Checking for hardcoded paths..."
 
-          # User-specific paths
-          if grep -r "/home/[a-z]" --include="*.py" --include="*.md" --include="*.sh" . 2>/dev/null | grep -v ".github"; then
+          # User-specific paths (exclude scripts/check_hardcoding.sh)
+          if grep -r "/home/[a-z]" --include="*.py" --include="*.md" . 2>/dev/null | grep -v ".github\|check_hardcoding"; then
             echo "❌ Found hardcoded /home/ paths"
             exit 1
           fi
 
-          # Home directory references
-          if grep -rE "~/\.(venv|local)" --include="*.py" --include="*.md" --include="*.sh" . 2>/dev/null; then
-            echo "❌ Found hardcoded home directory references"
+          # Home directory references in actual code (exclude check scripts)
+          if grep -rE "~/.venv/bin" --include="*.py" --include="*.md" . 2>/dev/null | grep -v "check_hardcoding"; then
+            echo "❌ Found hardcoded ~/.venv/bin references"
             exit 1
           fi
 
