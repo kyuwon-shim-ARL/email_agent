@@ -13,6 +13,17 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_DIR"
 
+# Expand PATH for cron (add common npm global paths)
+export PATH="$PATH:/usr/local/bin:/usr/bin:$HOME/.npm-global/bin:$HOME/.local/bin"
+
+# Find claude command
+CLAUDE_CMD=$(command -v claude 2>/dev/null)
+if [ -z "$CLAUDE_CMD" ]; then
+    echo "ERROR: claude command not found in PATH" >&2
+    echo "Install: npm install -g @anthropic-ai/claude-code" >&2
+    exit 1
+fi
+
 # Create logs directory if not exists
 mkdir -p logs
 
@@ -21,9 +32,10 @@ LOG_FILE="logs/daily_analyze_$(date +%Y%m%d).log"
 
 echo "=== Email Analysis Started: $(date) ===" >> "$LOG_FILE"
 echo "Project: $PROJECT_DIR" >> "$LOG_FILE"
+echo "Claude: $CLAUDE_CMD" >> "$LOG_FILE"
 
 # Run Claude Code: Analyze emails AND create Gmail drafts
 # --dangerously-skip-permissions: bypass permission prompts for cron execution
-claude -p "이메일 분석하고 초안도 만들어줘" --dangerously-skip-permissions >> "$LOG_FILE" 2>&1
+"$CLAUDE_CMD" -p "이메일 분석하고 초안도 만들어줘" --dangerously-skip-permissions >> "$LOG_FILE" 2>&1
 
 echo "=== Completed: $(date) ===" >> "$LOG_FILE"
