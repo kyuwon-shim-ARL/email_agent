@@ -24,6 +24,16 @@ cd email-agent
 
 ### 2. Python 환경 설정
 
+**uv 사용 (권장):**
+```bash
+# uv 설치 (최초 1회)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 의존성 설치
+uv sync
+```
+
+**pip 사용:**
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
@@ -196,6 +206,21 @@ email_agent/
 ├── email_history_config.json # 스프레드시트 ID (자동 생성)
 ├── requirements.txt          # Python 의존성
 └── README.md
+```
+
+---
+
+## 업데이트 (기존 사용자)
+
+```bash
+cd email-agent
+git pull
+
+# uv 사용자
+uv sync
+
+# pip 사용자
+pip install -r requirements.txt
 ```
 
 ---

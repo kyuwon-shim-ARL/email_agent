@@ -15,11 +15,21 @@ git clone <repository-url>
 cd email_agent
 ```
 
-### 2. Python 가상환경 설정
+### 2. Python 환경 설정
 
+**uv 사용 (권장):**
 ```bash
-python -m venv ~/.venv
-source ~/.venv/bin/activate  # Linux/Mac
+# uv 설치 (최초 1회)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 의존성 설치 (가상환경 자동 생성)
+uv sync
+```
+
+**pip 사용:**
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
@@ -28,7 +38,12 @@ pip install -r requirements.txt
 ```bash
 # credentials.json을 프로젝트 루트에 배치
 # 최초 실행 시 브라우저에서 OAuth 인증
-~/.venv/bin/python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
+
+# uv 사용자
+uv run python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
+
+# pip 사용자
+python -c "from email_classifier.gmail_client import GmailClient; GmailClient()"
 ```
 
 ### 4. 사용 방법
