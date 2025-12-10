@@ -24,8 +24,8 @@ email_agent/
 프로젝트를 클론하면 Claude Code가 자동으로 스킬을 인식합니다:
 
 ```bash
-git clone https://github.com/kyuwon-shim-ARL/email_agent.git
-cd email_agent
+git clone https://github.com/your-username/email-agent.git
+cd email-agent
 
 # Claude Code에서 이 디렉토리 열기
 ```
