@@ -5,7 +5,73 @@ All notable changes to Email Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2025-01-XX
+## [0.6.3] - 2025-12-10
+
+### Added
+- **CI/CD Pipeline**: GitHub Actions workflow for automated testing
+  - Hardcoding check on every push/PR
+  - Clean install test with uv
+- **Hardcoding Check Script**: `scripts/check_hardcoding.sh` for pre-deploy validation
+- **uv Support**: Modern Python package management with lockfile
+
+### Changed
+- **Context-Based Priority System**: Removed all hardcoded rules
+  - 5-axis judgment: sender relationship, request strength, urgency signals, mail type, recipient type
+  - Claude analyzes email context holistically (tone, signature, content)
+  - No more hardcoded names or roles
+- **Portable Deployment**: Removed all user-specific paths
+  - `/home/kyuwon/...` → dynamic detection
+  - `~/.venv/bin/python` → `python` (uses activated venv)
+  - Spreadsheet ID from config file (not hardcoded)
+- **Cron Script**: Dynamic PATH expansion and claude command detection
+
+### Fixed
+- `email-send.md`: Now reads spreadsheet ID from config
+- Column indices updated for 16-column schema (O=Draft ID)
+- Sheet name references fixed (Emails → 신규 메일)
+
+---
+
+## [0.6.2] - 2025-12-XX
+
+### Added
+- **Auto Gmail Draft Creation**: `/email-analyze` automatically creates Gmail drafts
+- **Draft ID Auto-Save**: Draft IDs saved to spreadsheet (column O)
+- **16-Column Schema**: Extended Email Tracker format
+  - Added: 답장여부 (N), Draft ID (O), Thread ID (P)
+- **HTML Stripping**: Body preview shows plain text only
+
+### Changed
+- Workflow: Analyze → Label → Sheet → Auto Draft → Report
+
+---
+
+## [0.6.1] - 2025-12-XX
+
+### Added
+- **Recipient Type Priority Adjustment**
+  - 📩 To (직접수신): Base priority
+  - 📋 CC (참조): -1 priority
+  - 👥 Group mail: -1 priority
+
+---
+
+## [0.6.0] - 2025-12-XX
+
+### Added
+- **Unified Spreadsheet**: Single spreadsheet with two tabs
+  - 신규 메일: Today's analyzed emails (cleared each run)
+  - 처리 이력: Cumulative history (updates existing)
+- **Reply Status Check**: `check_if_replied()` via Gmail Thread API
+- **Daily Automation**: Cron script for 8 AM auto-analysis
+- **처리완료 Label**: Skip already-processed emails
+
+### Changed
+- Architecture: From daily spreadsheets to unified history
+
+---
+
+## [0.5.0] - 2025-12-XX
 
 ### Added
 
