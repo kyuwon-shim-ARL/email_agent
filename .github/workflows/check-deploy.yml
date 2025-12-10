@@ -1,0 +1,47 @@
+name: Deploy Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-hardcoding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for hardcoded paths
+        run: |
+          echo "🔍 Checking for hardcoded paths..."
+
+          # User-specific paths
+          if grep -r "/home/[a-z]" --include="*.py" --include="*.md" --include="*.sh" . 2>/dev/null | grep -v ".github"; then
+            echo "❌ Found hardcoded /home/ paths"
+            exit 1
+          fi
+
+          # Home directory references
+          if grep -rE "~/\.(venv|local)" --include="*.py" --include="*.md" --include="*.sh" . 2>/dev/null; then
+            echo "❌ Found hardcoded home directory references"
+            exit 1
+          fi
+
+          echo "✅ No hardcoded paths found"
+
+  test-clean-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Test imports
+        run: |
+          uv run python -c "from email_classifier.gmail_client import GmailClient; print('✅ Import OK')"
+          uv run python -c "from email_classifier.sheets_client import SheetsClient; print('✅ Import OK')"
