@@ -8,18 +8,18 @@ echo "🔍 하드코딩 검사 중..."
 
 ERRORS=0
 
-# 1. 사용자별 경로 검사
+# 1. 사용자별 경로 검사 (실행 코드만, 문서 제외)
 echo -n "  - 사용자 경로 (/home/*, /Users/*)... "
-if git ls-files | xargs grep -l "/home/[a-z]" 2>/dev/null | grep -v "check_hardcoding.sh"; then
+if git ls-files | xargs grep -l "/home/[a-z]" 2>/dev/null | grep -v "check_hardcoding.sh\|CHANGELOG\|tasks.md\|\.github"; then
     echo "❌ 발견"
     ERRORS=$((ERRORS + 1))
 else
     echo "✅"
 fi
 
-# 2. ~/.venv 등 홈 디렉토리 참조
+# 2. ~/.venv 등 홈 디렉토리 참조 (실행 코드만, 문서 제외)
 echo -n "  - 홈 디렉토리 참조 (~/)... "
-if git ls-files | xargs grep -E "~/\.(venv|local|config)" 2>/dev/null | grep -v "check_hardcoding.sh"; then
+if git ls-files | xargs grep -E "~/\.(venv|local|config)" 2>/dev/null | grep -v "check_hardcoding.sh\|CHANGELOG\|tasks.md\|\.github"; then
     echo "❌ 발견"
     ERRORS=$((ERRORS + 1))
 else
